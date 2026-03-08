@@ -1,0 +1,43 @@
+Realize um Redesign Completo da interface do meu aplicativo de dublagem e gere uma nova identidade visual (Logo), utilizando estritamente a estética Glassmorphism (estilo vidro). O objetivo é um visual premium, moderno e altamente profissional.
+
+1. Identidade Visual e Logo:
+
+Gere um logo que simule um objeto físico em 3D de vidro cristalino ou acrílico jateado, com refração de luz e bordas brilhantes.
+
+Conceito: Uma fusão abstrata entre uma onda sonora e a silhueta de um microfone, simbolizando a conexão entre Diretor e Dublador.
+
+Cores: Gradientes translúcidos em tons de azul elétrico e violeta. Evite ícones 2D planos ou genéricos estilo 'Canva'. Salve como logo.png e aplique-o no cabeçalho do app.
+
+2. Arquitetura da Interface (UI):
+
+Efeito de Vidro: Aplique backdrop-filter: blur(12px) e fundos semi-transparentes (rgba(255, 255, 255, 0.1)) em todos os painéis principais.
+
+Profundidade: Adicione bordas finas de 1px (border: 1px solid rgba(255, 255, 255, 0.2)) e sombras suaves para criar um efeito de camadas flutuantes.
+
+Fundo do App: Implemente um fundo dinâmico com Mesh Gradients suaves que se movam levemente ou fiquem visíveis sob as janelas de vidro.
+
+Tipografia: Use a fonte 'Inter' ou 'Poppins' com espaçamento generoso (padding) e ícones minimalistas de traço fino.
+
+3. Componentes e UX:
+
+A Janela de Gravação deve ser o elemento central, parecendo uma placa de vidro suspensa.
+
+O Chat de Voz (Popup) deve seguir o mesmo padrão, com botões de controle em cores vibrantes mas com acabamento fosco.
+
+Importante: Mantenha a funcionalidade atual de gravação e a lógica de nomenclatura de arquivos intactas. Foque apenas na camada visual (CSS/HTML e ativos de imagem).
+
+4. Verificação Técnica: Certifique-se de que a propriedade backdrop-filter foi aplicada corretamente no CSS para garantir o efeito de desfoque real."
+
+O que esperar após rodar este comando:
+
+Transformação Visual: O app deixará de ter cores sólidas e passará a ter profundidade. O efeito de "vidro" fará com que os elementos pareçam flutuar sobre o fundo colorido.
+
+Harmonia: Como o logo e a interface seguem o mesmo princípio (vidro/refração), o app parecerá um produto de software de alto nível, pronto para o mercado.
+
+Legibilidade: O uso do blur no fundo garante que o texto permaneça legível, mesmo com a transparência.
+
+Dica de Execução:
+
+Se o Replit Agent disser que não consegue gerar o logo com perfeição 3D (devido a limitações de modelos de imagem nativos), diga a ele:
+
+"Se não conseguir gerar o logo em 3D nativamente, crie o melhor ícone SVG possível usando gradientes e transparências que sigam estas mesmas regras."
