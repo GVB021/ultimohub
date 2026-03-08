@@ -27,6 +27,14 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 const uploadsDir = path.join(process.cwd(), "public", "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
+function safeAudioPath(audioUrl: string): string | null {
+  const normalized = audioUrl.replace(/^\/+/, "");
+  const resolved = path.resolve(process.cwd(), "public", normalized);
+  const uploadsBase = path.resolve(process.cwd(), "public", "uploads");
+  if (!resolved.startsWith(uploadsBase)) return null;
+  return resolved;
+}
+
 async function logAdminAction(req: Request, action: string, details?: string) {
   try {
     const userId = (req as any).user?.id;
@@ -492,6 +500,171 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(200).json({ message: "Take excluido" });
     } catch (err) {
       res.status(500).json({ message: "Erro ao excluir take" });
+    }
+  });
+
+  // TAKES - GROUPED LISTING (for Takes de Audio page)
+  app.get("/api/studios/:studioId/takes/grouped", requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user!;
+      const studioId = req.params.studioId;
+      if (user.role === "platform_owner") {
+        const allTakes = await storage.getAllTakesGrouped();
+        return res.status(200).json(allTakes);
+      }
+      const roles = await storage.getUserRolesInStudio(user.id, studioId);
+      if (!roles.includes("studio_admin")) {
+        return res.status(403).json({ message: "Acesso restrito a administradores" });
+      }
+      const studioTakes = await storage.getStudioTakesGrouped(studioId);
+      res.status(200).json(studioTakes);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erro ao buscar takes" });
+    }
+  });
+
+  // TAKES - INDIVIDUAL DOWNLOAD
+  app.get("/api/takes/:id/download", requireAuth, async (req, res) => {
+    try {
+      const takeList = await storage.getTakesByIds([req.params.id]);
+      if (takeList.length === 0) return res.status(404).json({ message: "Take nao encontrado" });
+      const take = takeList[0];
+      const user = (req as any).user!;
+      if (user.role !== "platform_owner") {
+        const roles = await storage.getUserRolesInStudio(user.id, take.studioId);
+        if (!roles.includes("studio_admin")) {
+          return res.status(403).json({ message: "Acesso negado" });
+        }
+      }
+      const filePath = safeAudioPath(take.audioUrl);
+      if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ message: "Arquivo nao encontrado" });
+      const charName = (take.characterName || "PERSONAGEM").replace(/\s+/g, "");
+      const actorName = (take.voiceActorName || "DUBLADOR").replace(/\s+/g, "");
+      const d = take.createdAt ? new Date(take.createdAt) : new Date();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      const filename = `${charName}_${actorName}_${hh}${mm}${ss}.WAV`;
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "audio/wav");
+      fs.createReadStream(filePath).pipe(res);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erro ao baixar take" });
+    }
+  });
+
+  // TAKES - BULK DOWNLOAD (selected takes)
+  app.post("/api/takes/download-bulk", requireAuth, async (req, res) => {
+    try {
+      const { takeIds } = req.body;
+      if (!Array.isArray(takeIds) || takeIds.length === 0) {
+        return res.status(400).json({ message: "Nenhum take selecionado" });
+      }
+      const takeList = await storage.getTakesByIds(takeIds);
+      if (takeList.length === 0) return res.status(404).json({ message: "Takes nao encontrados" });
+      const user = (req as any).user!;
+      if (user.role !== "platform_owner") {
+        const studioIds = [...new Set(takeList.map((t: any) => t.studioId))];
+        for (const sid of studioIds) {
+          const roles = await storage.getUserRolesInStudio(user.id, sid as string);
+          if (!roles.includes("studio_admin")) {
+            return res.status(403).json({ message: "Acesso negado a takes de outro estudio" });
+          }
+        }
+      }
+      const archiver = (await import("archiver")).default;
+      const archive = archiver("zip", { zlib: { level: 5 } });
+      res.setHeader("Content-Disposition", 'attachment; filename="takes_selecionados.zip"');
+      res.setHeader("Content-Type", "application/zip");
+      archive.pipe(res);
+      for (const take of takeList) {
+        const filePath = safeAudioPath(take.audioUrl);
+        if (!filePath || !fs.existsSync(filePath)) continue;
+        const charName = (take.characterName || "PERSONAGEM").replace(/\s+/g, "");
+        const actorName = (take.voiceActorName || "DUBLADOR").replace(/\s+/g, "");
+        const d = take.createdAt ? new Date(take.createdAt) : new Date();
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        const ss = String(d.getSeconds()).padStart(2, "0");
+        const filename = `${charName}_${actorName}_${hh}${mm}${ss}.WAV`;
+        archive.file(filePath, { name: filename });
+      }
+      await archive.finalize();
+    } catch (err: any) {
+      if (!res.headersSent) res.status(500).json({ message: err?.message || "Erro ao gerar ZIP" });
+    }
+  });
+
+  // TAKES - DOWNLOAD ALL IN SESSION
+  app.get("/api/sessions/:sessionId/takes/download-all", requireAuth, async (req, res) => {
+    try {
+      const takeList = await storage.getSessionTakesWithDetails(req.params.sessionId);
+      if (takeList.length === 0) return res.status(404).json({ message: "Nenhum take nesta sessao" });
+      const user = (req as any).user!;
+      if (user.role !== "platform_owner") {
+        const roles = await storage.getUserRolesInStudio(user.id, takeList[0].studioId);
+        if (!roles.includes("studio_admin")) {
+          return res.status(403).json({ message: "Acesso negado" });
+        }
+      }
+      const archiver = (await import("archiver")).default;
+      const archive = archiver("zip", { zlib: { level: 5 } });
+      const sessionName = (takeList[0].sessionTitle || "Sessao").replace(/[^a-zA-Z0-9_\-]/g, "_");
+      res.setHeader("Content-Disposition", `attachment; filename="${sessionName}.zip"`);
+      res.setHeader("Content-Type", "application/zip");
+      archive.pipe(res);
+      for (const take of takeList) {
+        const filePath = safeAudioPath(take.audioUrl);
+        if (!filePath || !fs.existsSync(filePath)) continue;
+        const charName = (take.characterName || "PERSONAGEM").replace(/\s+/g, "");
+        const actorName = (take.voiceActorName || "DUBLADOR").replace(/\s+/g, "");
+        const d = take.createdAt ? new Date(take.createdAt) : new Date();
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        const ss = String(d.getSeconds()).padStart(2, "0");
+        const filename = `${charName}_${actorName}_${hh}${mm}${ss}.WAV`;
+        archive.file(filePath, { name: filename });
+      }
+      await archive.finalize();
+    } catch (err: any) {
+      if (!res.headersSent) res.status(500).json({ message: err?.message || "Erro ao gerar ZIP" });
+    }
+  });
+
+  // TAKES - DOWNLOAD ALL IN PRODUCTION
+  app.get("/api/productions/:productionId/takes/download-all", requireAuth, async (req, res) => {
+    try {
+      const takeList = await storage.getProductionTakesWithDetails(req.params.productionId);
+      if (takeList.length === 0) return res.status(404).json({ message: "Nenhum take nesta producao" });
+      const user = (req as any).user!;
+      if (user.role !== "platform_owner") {
+        const roles = await storage.getUserRolesInStudio(user.id, takeList[0].studioId);
+        if (!roles.includes("studio_admin")) {
+          return res.status(403).json({ message: "Acesso negado" });
+        }
+      }
+      const archiver = (await import("archiver")).default;
+      const archive = archiver("zip", { zlib: { level: 5 } });
+      const prodName = (takeList[0].productionName || "Producao").replace(/[^a-zA-Z0-9_\-]/g, "_");
+      res.setHeader("Content-Disposition", `attachment; filename="${prodName}.zip"`);
+      res.setHeader("Content-Type", "application/zip");
+      archive.pipe(res);
+      for (const take of takeList) {
+        const filePath = safeAudioPath(take.audioUrl);
+        if (!filePath || !fs.existsSync(filePath)) continue;
+        const charName = (take.characterName || "PERSONAGEM").replace(/\s+/g, "");
+        const actorName = (take.voiceActorName || "DUBLADOR").replace(/\s+/g, "");
+        const d = take.createdAt ? new Date(take.createdAt) : new Date();
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        const ss = String(d.getSeconds()).padStart(2, "0");
+        const filename = `${charName}_${actorName}_${hh}${mm}${ss}.WAV`;
+        const sessionFolder = (take.sessionTitle || "Sessao").replace(/[^a-zA-Z0-9_\-]/g, "_");
+        archive.file(filePath, { name: `${sessionFolder}/${filename}` });
+      }
+      await archive.finalize();
+    } catch (err: any) {
+      if (!res.headersSent) res.status(500).json({ message: err?.message || "Erro ao gerar ZIP" });
     }
   });
 

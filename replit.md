@@ -72,6 +72,7 @@ Preferred communication style: Simple, everyday language.
 
 - **Platform Owner Admin** (`/admin`): God-level real-time panel with 5s polling. Manages all users, studios, productions, sessions, takes, audit logs. Can approve/reject any pending registration, force role/status changes, reset passwords, create/delete studios.
 - **Studio Admin Panel** (`/studio/:studioId/admin`): Studio-level management. Approve/reject pending registrations for the studio, manage members and roles, create productions and sessions. Visible in sidebar for studio_admin and platform_owner.
+- **Takes de Áudio** (`/studio/:studioId/takes`): Audio take library with hierarchical grouping (Studio > Produção > Sessão > Take for platform_owner; Produção > Sessão > Take for studio_admin). Displays filenames in `[PERSONAGEM]_[DUBLADOR]_[HHMMSS].WAV` pattern. Supports: individual take download, bulk download of selected takes (ZIP), session-level download (ZIP), production-level download (ZIP with session subfolders). Audio preview with play/pause. Access restricted to platform_owner (sees ALL studios) and studio_admin (sees own studio only).
 
 ### Data Storage
 
@@ -99,7 +100,7 @@ Preferred communication style: Simple, everyday language.
 
 - Type-safe API contract defined in `shared/routes.ts` using Zod schemas
 - `buildUrl` utility for parameterized URL construction
-- REST endpoints: `/api/studios`, `/api/productions`, `/api/sessions/:sessionId/takes` (POST/GET), `/api/characters`, `/api/staff`, `/api/takes/:id` (DELETE/download), `/api/notifications`, `/api/admin/*`, `/api/auth/*`
+- REST endpoints: `/api/studios`, `/api/productions`, `/api/sessions/:sessionId/takes` (POST/GET), `/api/characters`, `/api/staff`, `/api/takes/:id` (DELETE/download), `/api/takes/:id/download`, `/api/takes/download-bulk` (POST), `/api/sessions/:sessionId/takes/download-all`, `/api/productions/:productionId/takes/download-all`, `/api/studios/:studioId/takes/grouped`, `/api/notifications`, `/api/admin/*`, `/api/auth/*`
 - Public endpoints (no auth): `GET /api/auth/studios-public` (for registration form)
 - All protected routes use `requireAuth` middleware; role-specific routes layer additional middleware
 
@@ -137,4 +138,5 @@ Preferred communication style: Simple, everyday language.
 - `tailwind-merge` + `clsx` — CSS class utilities
 - `zod` + `drizzle-zod` — runtime validation and schema inference
 - `multer` — multipart file upload handling
+- `archiver` — ZIP file generation for bulk take downloads
 - `date-fns` — date formatting

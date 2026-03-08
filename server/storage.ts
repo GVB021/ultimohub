@@ -108,6 +108,11 @@ export interface IStorage {
 
   getAllTakes(): Promise<Take[]>;
   deleteTake(id: string): Promise<void>;
+  getStudioTakesGrouped(studioId: string): Promise<any[]>;
+  getAllTakesGrouped(): Promise<any[]>;
+  getTakesByIds(ids: string[]): Promise<any[]>;
+  getSessionTakesWithDetails(sessionId: string): Promise<any[]>;
+  getProductionTakesWithDetails(productionId: string): Promise<any[]>;
 
   getSystemStats(): Promise<{ users: number; studios: number; productions: number; sessions: number; takes: number; pendingUsers: number }>;
   getStudioAdmins(studioId: string): Promise<User[]>;
@@ -378,6 +383,63 @@ export class DatabaseStorage implements IStorage {
 
   async deleteTake(id: string): Promise<void> {
     await db.delete(takes).where(eq(takes.id, id));
+  }
+
+  private async takesWithDetails(whereClause?: any): Promise<any[]> {
+    const query = db
+      .select({
+        id: takes.id,
+        sessionId: takes.sessionId,
+        characterId: takes.characterId,
+        voiceActorId: takes.voiceActorId,
+        lineIndex: takes.lineIndex,
+        audioUrl: takes.audioUrl,
+        durationSeconds: takes.durationSeconds,
+        isPreferred: takes.isPreferred,
+        qualityScore: takes.qualityScore,
+        aiRecommended: takes.aiRecommended,
+        createdAt: takes.createdAt,
+        characterName: characters.name,
+        voiceActorName: users.displayName,
+        sessionTitle: sessions.title,
+        productionId: sessions.productionId,
+        productionName: productions.name,
+        studioId: sessions.studioId,
+        studioName: studios.name,
+      })
+      .from(takes)
+      .innerJoin(sessions, eq(takes.sessionId, sessions.id))
+      .innerJoin(productions, eq(sessions.productionId, productions.id))
+      .innerJoin(studios, eq(sessions.studioId, studios.id))
+      .leftJoin(characters, eq(takes.characterId, characters.id))
+      .leftJoin(users, eq(takes.voiceActorId, users.id))
+      .orderBy(desc(takes.createdAt));
+
+    if (whereClause) {
+      return await query.where(whereClause);
+    }
+    return await query;
+  }
+
+  async getStudioTakesGrouped(studioId: string): Promise<any[]> {
+    return this.takesWithDetails(eq(sessions.studioId, studioId));
+  }
+
+  async getAllTakesGrouped(): Promise<any[]> {
+    return this.takesWithDetails();
+  }
+
+  async getTakesByIds(ids: string[]): Promise<any[]> {
+    if (ids.length === 0) return [];
+    return this.takesWithDetails(inArray(takes.id, ids));
+  }
+
+  async getSessionTakesWithDetails(sessionId: string): Promise<any[]> {
+    return this.takesWithDetails(eq(takes.sessionId, sessionId));
+  }
+
+  async getProductionTakesWithDetails(productionId: string): Promise<any[]> {
+    return this.takesWithDetails(eq(sessions.productionId, productionId));
   }
 
   async getSystemStats(): Promise<{ users: number; studios: number; productions: number; sessions: number; takes: number; pendingUsers: number }> {

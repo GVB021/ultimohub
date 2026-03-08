@@ -48,6 +48,7 @@ export const pt = {
     admin: "Painel Admin",
     platform: "Plataforma",
     members: "Membros",
+    takes: "Takes de Audio",
   },
   studio: {
     yourStudios: "Seus Estudios",

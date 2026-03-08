@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import {
   Building2, Calendar, Film, LayoutDashboard,
-  Settings, Users, LogOut, Bell, ShieldCheck
+  Settings, Users, LogOut, Bell, ShieldCheck, Music
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
@@ -40,6 +40,9 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
     ];
     items.push({ title: pt.nav.productions, url: `/studio/${studioId}/productions`, icon: Film });
     items.push({ title: pt.nav.sessions, url: `/studio/${studioId}/sessions`, icon: Calendar });
+    if (isStudioAdmin) {
+      items.push({ title: pt.nav.takes, url: `/studio/${studioId}/takes`, icon: Music });
+    }
     if (canManageMembers) {
       items.push({ title: pt.nav.members, url: `/studio/${studioId}/members`, icon: Users });
     }
@@ -47,7 +50,7 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
       items.push({ title: pt.nav.staff, url: `/studio/${studioId}/staff`, icon: Users });
     }
     return items;
-  }, [studioId, canManageMembers, canViewStaff]);
+  }, [studioId, canManageMembers, canViewStaff, isStudioAdmin]);
 
   const activeItemClass = "bg-gradient-to-r from-primary/20 to-accent/10 text-primary font-medium border-l-2 border-l-primary";
   const inactiveItemClass = "text-sidebar-foreground/70 border-l-2 border-l-transparent";
