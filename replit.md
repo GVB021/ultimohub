@@ -40,26 +40,29 @@ Preferred communication style: Simple, everyday language.
   - `server/index.ts` — app bootstrap, middleware, HTTP server
   - `server/routes.ts` — all REST API route definitions
   - `server/storage.ts` — data access layer (Drizzle ORM queries)
-  - `server/middleware/auth.ts` — `requireAuth`, `requireAdmin`, `requireStudioAccess`, `requireStudioRole` middleware using Replit Auth
+  - `server/middleware/auth.ts` — `requireAuth`, `requireAdmin`, `requireStudioAccess`, `requireStudioRole` middleware (session-based)
   - `server/lib/logger.ts` — structured logging utility
-  - `server/replit_integrations/auth/` — Replit OIDC auth setup with Passport.js
+  - `server/replit_integrations/auth/` — Passport.js LocalStrategy (email/password) auth setup
 - **File uploads**: Multer (memory storage), files saved to `public/uploads/`, served statically at `/uploads`
 - **Shared types**: `shared/schema.ts` and `shared/routes.ts` are imported by both client and server for type-safe API contracts
 
 ### Authentication & Authorization
 
-- **Auth Provider**: Replit OpenID Connect via `openid-client` + Passport.js
+- **Auth Provider**: Email + password via Passport.js LocalStrategy (no Replit OIDC)
+- **Password hashing**: `crypto.scryptSync` (Node built-in, no bcrypt dependency)
 - **Session storage**: PostgreSQL-backed sessions via `connect-pg-simple`, stored in `http_sessions` table
 - **Session secret**: `SESSION_SECRET` environment variable
-- **User model**: Combined Replit Auth fields (id, email, firstName, lastName, profileImageUrl) + VHUB-3 extended profile fields (artistName, role, status, specialty, etc.)
+- **User registration flow**: Users register via `/login` page (create account form) → account created with status `pending` → platform_owner approves in admin panel and assigns studio + role
+- **Platform owner seed**: Auto-created at startup: `borbaggabriel@gmail.com` / `pipoca25`
 - **Role system** (hierarchical):
   - `platform_owner` (100) — full platform access, admin panel
   - `studio_admin` (80) — manage studio members and settings
   - `diretor` (60) — create productions, manage staff
   - `engenheiro_audio` (40) — create sessions, edit scripts
   - `dublador` (20) — access recording rooms
+  - `aluno` (10) — view-only access
 - **Studio membership**: Users can have multiple roles within a studio via `userStudioRoles` table; membership approval flow via `studioMemberships`
-- **Frontend auth flow**: `useAuth` hook fetches `/api/auth/user`; unauthenticated users are redirected to `/api/login` (Replit OAuth flow)
+- **Frontend auth flow**: `useAuth` hook fetches `/api/auth/user`; login via POST `/api/auth/login`; register via POST `/api/auth/register`; logout via POST `/api/auth/logout`; unauthenticated users are redirected to `/login`
 
 ### Data Storage
 

@@ -56,25 +56,6 @@ async function verifySessionAccess(req: Request, res: Response, sessionId: strin
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
-  // Seed: ensure first user who logs in becomes platform_owner
-  const ensurePlatformOwner = async (userId: string) => {
-    const allUsers = await storage.getAllUsers();
-    const hasPlatformOwner = allUsers.some(u => u.role === "platform_owner");
-    if (!hasPlatformOwner) {
-      await storage.updateUser(userId, { role: "platform_owner", status: "approved" });
-      logger.info("First user promoted to platform_owner", { userId });
-    }
-  };
-
-  // AUTH: Get current user (with VHUB role info) - also promote first user
-  app.get("/api/auth/user", requireAuth, async (req, res) => {
-    const user = (req as any).user!;
-    await ensurePlatformOwner(user.id);
-    const fullUser = await storage.getUser(user.id);
-    if (!fullUser) return res.status(404).json({ message: "User not found" });
-    res.json(fullUser);
-  });
-
   // NOTIFICATIONS
   app.get("/api/notifications", requireAuth, async (req, res) => {
     const userId = (req as any).user!.id;

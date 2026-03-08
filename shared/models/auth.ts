@@ -1,8 +1,6 @@
 import { sql } from "drizzle-orm";
-import { index, jsonb, pgTable, timestamp, varchar, text, boolean } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, timestamp, varchar, text } from "drizzle-orm/pg-core";
 
-// Session storage table for connect-pg-simple
-// (IMPORTANT) This table is mandatory for Replit Auth, don't drop it.
 export const httpSessions = pgTable(
   "http_sessions",
   {
@@ -13,15 +11,13 @@ export const httpSessions = pgTable(
   (table) => [index("IDX_session_expire").on(table.expire)]
 );
 
-// User storage table - combines Replit Auth fields + VHUB-3 extended profile
-// (IMPORTANT) This table is mandatory for Replit Auth, don't drop it.
 export const users = pgTable("users", {
-  id: varchar("id").primaryKey(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: varchar("email").unique(),
+  passwordHash: text("password_hash"),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
-  // VHUB-3 extended fields
   displayName: text("display_name"),
   fullName: text("full_name"),
   artistName: text("artist_name"),
@@ -38,7 +34,7 @@ export const users = pgTable("users", {
   specialty: text("specialty"),
   bio: text("bio"),
   portfolioUrl: text("portfolio_url"),
-  status: text("status").notNull().default("approved"),
+  status: text("status").notNull().default("pending"),
   role: text("role").notNull().default("user"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

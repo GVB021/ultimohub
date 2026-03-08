@@ -53,48 +53,44 @@ import { encodeWav, wavToBlob, getDurationSeconds } from "@/lib/audio/wavEncoder
 import { analyzeTakeQuality, type QualityMetrics } from "@/lib/audio/qualityAnalysis";
 
 function JitsiMeetPanel({ roomId, displayName }: { roomId: string; displayName: string }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
 
   const jitsiRoom = `vhub-session-${roomId}`.replace(/[^a-zA-Z0-9-]/g, "-");
-  const jitsiUrl = `https://meet.jit.si/${jitsiRoom}#userInfo.displayName="${encodeURIComponent(displayName)}"&config.startWithAudioMuted=true&config.startWithVideoMuted=true`;
-
-  if (!isOpen) {
-    return (
-      <div className="mt-4">
-        <button
-          onClick={() => setIsOpen(true)}
-          className="flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground border border-zinc-200 rounded-xl px-4 py-2.5 hover:bg-zinc-50 transition-colors w-full"
-          data-testid="button-open-voice-chat"
-        >
-          <Mic className="w-3.5 h-3.5" />
-          Abrir Chat de Voz (Jitsi)
-        </button>
-      </div>
-    );
-  }
+  const jitsiUrl = [
+    `https://meet.jit.si/${jitsiRoom}`,
+    `#config.startWithAudioMuted=false`,
+    `&config.startWithVideoMuted=true`,
+    `&config.prejoinPageEnabled=false`,
+    `&config.disableDeepLinking=true`,
+    `&config.enableWelcomePage=false`,
+    `&config.toolbarButtons=["microphone","hangup","tileview","fullscreen"]`,
+    `&userInfo.displayName="${encodeURIComponent(displayName)}"`,
+  ].join("");
 
   return (
-    <div className="mt-4 border border-zinc-200 rounded-xl overflow-hidden">
+    <div className="mt-4 border border-zinc-200 rounded-xl overflow-hidden" data-testid="panel-jitsi">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-100 bg-zinc-50">
         <span className="text-xs font-medium text-zinc-600 flex items-center gap-1.5">
-          <Mic className="w-3 h-3" /> Chat de Voz
+          <Mic className="w-3 h-3 text-green-500" /> Chat de Voz — Sala {jitsiRoom.slice(-6)}
         </span>
         <button
-          onClick={() => setIsOpen(false)}
-          className="text-zinc-400 hover:text-zinc-700 transition-colors"
-          data-testid="button-close-voice-chat"
+          onClick={() => setIsOpen(v => !v)}
+          className="text-xs text-zinc-400 hover:text-zinc-700 transition-colors flex items-center gap-1"
+          data-testid="button-toggle-jitsi"
         >
-          <X className="w-3.5 h-3.5" />
+          {isOpen ? <><X className="w-3 h-3" /> Minimizar</> : <><Mic className="w-3 h-3" /> Abrir</>}
         </button>
       </div>
-      <iframe
-        src={jitsiUrl}
-        allow="camera; microphone; fullscreen; display-capture; autoplay"
-        className="w-full"
-        style={{ height: "400px", border: "none" }}
-        data-testid="iframe-jitsi-meet"
-        title="Jitsi Meet Voice Chat"
-      />
+      {isOpen && (
+        <iframe
+          src={jitsiUrl}
+          allow="camera; microphone; fullscreen; display-capture; autoplay"
+          className="w-full"
+          style={{ height: "360px", border: "none" }}
+          data-testid="iframe-jitsi-meet"
+          title="Jitsi Meet Voice Chat"
+        />
+      )}
     </div>
   );
 }
