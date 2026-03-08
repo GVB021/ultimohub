@@ -25,6 +25,7 @@ import {
   Monitor,
   User,
   Edit3,
+  Download,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -63,34 +64,38 @@ function JitsiMeetPanel({ roomId, displayName }: { roomId: string; displayName: 
     `&config.prejoinPageEnabled=false`,
     `&config.disableDeepLinking=true`,
     `&config.enableWelcomePage=false`,
-    `&config.toolbarButtons=["microphone","hangup","tileview","fullscreen"]`,
+    `&config.toolbarButtons=["microphone","hangup","tileview","fullscreen","chat"]`,
     `&userInfo.displayName="${encodeURIComponent(displayName)}"`,
   ].join("");
 
   return (
     <div className="mt-4 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)" }} data-testid="panel-jitsi">
-      <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)" }}>
-        <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: "rgba(255,255,255,0.60)" }}>
-          <Mic className="w-3 h-3" style={{ color: "hsl(160 84% 60%)" }} /> Chat de Voz — Sala {jitsiRoom.slice(-6)}
+      <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: isOpen ? "1px solid rgba(255,255,255,0.06)" : "none", background: "rgba(255,255,255,0.03)" }}>
+        <span className="text-[11px] font-medium flex items-center gap-1.5" style={{ color: "rgba(255,255,255,0.60)" }}>
+          <Mic className="w-3 h-3" style={{ color: "hsl(160 84% 60%)" }} /> Chat de Voz
         </span>
         <button
           onClick={() => setIsOpen(v => !v)}
-          className="text-xs transition-colors flex items-center gap-1" style={{ color: "rgba(255,255,255,0.40)" }}
+          className="text-[11px] transition-colors flex items-center gap-1" style={{ color: "rgba(255,255,255,0.40)" }}
           data-testid="button-toggle-jitsi"
         >
           {isOpen ? <><X className="w-3 h-3" /> Minimizar</> : <><Mic className="w-3 h-3" /> Abrir</>}
         </button>
       </div>
-      {isOpen && (
+      <div style={{
+        height: isOpen ? "200px" : "0px",
+        overflow: "hidden",
+        transition: "height 0.3s ease",
+      }}>
         <iframe
           src={jitsiUrl}
           allow="camera; microphone; fullscreen; display-capture; autoplay"
           className="w-full"
-          style={{ height: "360px", border: "none" }}
+          style={{ height: "200px", border: "none" }}
           data-testid="iframe-jitsi-meet"
           title="Jitsi Meet Voice Chat"
         />
-      )}
+      </div>
     </div>
   );
 }
@@ -580,6 +585,39 @@ export default function RecordingRoom() {
     queryFn: () => authFetch(`/api/sessions/${sessionId}/takes`),
     enabled: !!sessionId,
   });
+
+  const deleteTakeMutation = useMutation({
+    mutationFn: (takeId: string) =>
+      authFetch(`/api/takes/${takeId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      refetchTakes();
+      toast({ title: "Take excluido" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Erro ao excluir take", description: err?.message || "Permissao negada", variant: "destructive" });
+    },
+  });
+
+  const handleDownloadTake = useCallback(async (take: any) => {
+    try {
+      const token = localStorage.getItem("vhub_token");
+      const res = await fetch(`/api/takes/${take.id}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Falha ao baixar take");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = take.filename || `take_${take.id}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch {
+      toast({ title: "Falha ao baixar take", variant: "destructive" });
+    }
+  }, [toast]);
 
   const [savedTakes, setSavedTakes] = useState<Set<number>>(new Set());
   const [takeCount, setTakeCount] = useState(0);
@@ -1654,6 +1692,43 @@ export default function RecordingRoom() {
                   }}>
                     {line.text}
                   </p>
+                  {lineTakes.length > 0 && (
+                    <div className="mt-2 flex flex-col gap-1">
+                      {lineTakes.map((take: any) => (
+                        <div key={take.id} className="flex items-center gap-2 text-[11px] px-2 py-1 rounded-lg" style={{ background: "rgba(255,255,255,0.04)" }}>
+                          <span className="font-mono" style={{ color: "rgba(255,255,255,0.50)" }}>
+                            {take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : ""}
+                          </span>
+                          <span className="truncate" style={{ color: "rgba(255,255,255,0.60)" }}>
+                            {take.characterName || "Take"}
+                          </span>
+                          <div className="ml-auto flex items-center gap-1">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDownloadTake(take); }}
+                              className="p-1 rounded transition-colors"
+                              style={{ color: "rgba(255,255,255,0.40)" }}
+                              title="Baixar take"
+                              data-testid={`button-download-take-${take.id}`}
+                            >
+                              <Download className="w-3 h-3" />
+                            </button>
+                            {(take.userId === user?.id || take.voiceActorId === user?.id) && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); deleteTakeMutation.mutate(take.id); }}
+                                className="p-1 rounded transition-colors"
+                                style={{ color: "rgba(239,68,68,0.60)" }}
+                                title="Excluir take"
+                                data-testid={`button-delete-take-${take.id}`}
+                                disabled={deleteTakeMutation.isPending}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}

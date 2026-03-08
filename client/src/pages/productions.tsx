@@ -26,6 +26,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   PageSection, PageHeader, EmptyState, StatusBadge, FieldGroup, GridSkeleton
 } from "@/components/ui/design-system";
+import { useStudioRole } from "@/hooks/use-studio-role";
 import { pt } from "@/lib/i18n";
 
 interface ScriptLine {
@@ -39,6 +40,7 @@ const Productions = memo(function Productions({ studioId }: { studioId: string }
   const { data: productions, isLoading } = useProductions(studioId);
   const createProd = useCreateProduction(studioId);
   const { toast } = useToast();
+  const { canCreateProductions } = useStudioRole(studioId);
 
   const [search, setSearch] = useState("");
   const [isCreateOpen, setIsOpen] = useState(false);
@@ -63,7 +65,7 @@ const Productions = memo(function Productions({ studioId }: { studioId: string }
       <PageHeader
         title={pt.productions.title}
         subtitle="Gerencie seus projetos de dublagem"
-        action={
+        action={canCreateProductions ? (
           <Dialog open={isCreateOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-1.5 press-effect">
@@ -116,7 +118,7 @@ const Productions = memo(function Productions({ studioId }: { studioId: string }
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        }
+        ) : undefined}
       />
 
       <div className="relative">
@@ -160,9 +162,11 @@ const Productions = memo(function Productions({ studioId }: { studioId: string }
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedProdId(prod.id); setIsManageOpen(true); }}>
-                    <Settings2 className="w-4 h-4 mr-2" /> Gerenciar
-                  </DropdownMenuItem>
+                  {canCreateProductions && (
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedProdId(prod.id); setIsManageOpen(true); }}>
+                      <Settings2 className="w-4 h-4 mr-2" /> Gerenciar
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onClick={async (e) => {
                     e.stopPropagation();
                     try {

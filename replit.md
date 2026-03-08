@@ -58,12 +58,12 @@ Preferred communication style: Simple, everyday language.
 - **Registration flow**: Users register via `/login` page → select studio from dropdown → account created with `status: "pending"` → `studioMembership` created as pending → studio_admin (or platform_owner) approves with role assignment → user gets `status: "approved"` and studio access
 - **Platform owner seed**: Auto-created at startup: `borbaggabriel@gmail.com` / `pipoca25`
 - **Role system** (hierarchical):
-  - `platform_owner` (100) — full platform access, god-level admin panel
-  - `studio_admin` (80) — manage studio members, approve registrations, studio admin panel
-  - `diretor` (60) — create productions, manage staff
-  - `engenheiro_audio` (40) — create sessions, edit scripts
-  - `dublador` (20) — access recording rooms
-  - `aluno` (10) — view-only access
+  - `platform_owner` (100) — full platform access, god-level admin panel, always Jitsi moderator
+  - `studio_admin` (80) — manage studio members, approve registrations, create/edit productions, manage staff, studio admin panel
+  - `diretor` (60) — create sessions (can only delete own sessions), Jitsi moderator
+  - `engenheiro_audio` (40) — view-only access to productions/sessions
+  - `dublador` (20) — record takes, save/download/delete own takes, join sessions
+  - `aluno` (10) — record takes, save/download/delete own takes, join sessions
 - **Studio membership**: Users can have multiple roles within a studio via `userStudioRoles` table; membership approval flow via `studioMemberships`
 - **Frontend auth flow**: `useAuth` hook fetches `/api/auth/user`; login via POST `/api/auth/login`; register via POST `/api/auth/register`; logout via POST `/api/auth/logout`; unauthenticated users are redirected to `/login`
 

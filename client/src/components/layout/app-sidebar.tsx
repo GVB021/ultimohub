@@ -24,7 +24,7 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
   const [location] = useLocation();
   const studio = useStudio(studioId);
   const { user, logout } = useAuth();
-  const { canManageMembers, hasMinRole } = useStudioRole(studioId);
+  const { canManageMembers, canViewStaff, hasMinRole } = useStudioRole(studioId);
 
   const { data: unreadCount } = useQuery({
     queryKey: ["/api/notifications/unread-count"],
@@ -43,8 +43,11 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
     if (canManageMembers) {
       items.push({ title: pt.nav.members, url: `/studio/${studioId}/members`, icon: Users });
     }
+    if (canViewStaff) {
+      items.push({ title: pt.nav.staff, url: `/studio/${studioId}/staff`, icon: Users });
+    }
     return items;
-  }, [studioId, canManageMembers]);
+  }, [studioId, canManageMembers, canViewStaff]);
 
   const activeItemClass = "bg-gradient-to-r from-primary/20 to-accent/10 text-primary font-medium border-l-2 border-l-primary";
   const inactiveItemClass = "text-sidebar-foreground/70 border-l-2 border-l-transparent";

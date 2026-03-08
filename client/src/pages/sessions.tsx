@@ -3,7 +3,7 @@ import { useSessions, useCreateSession } from "@/hooks/use-sessions";
 import { useProductions } from "@/hooks/use-productions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Calendar as CalendarIcon, Clock, Plus, Video, Film, Loader2 } from "lucide-react";
+import { Calendar as CalendarIcon, Clock, Plus, Video, Film, Loader2, Trash2 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
@@ -13,6 +13,10 @@ import {
 } from "@/components/ui/select";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
+import { useStudioRole } from "@/hooks/use-studio-role";
+import { useAuth } from "@/hooks/use-auth";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { authFetch } from "@/lib/auth-fetch";
 import {
   PageSection, PageHeader, EmptyState, StatusBadge, FieldGroup, GridSkeleton
 } from "@/components/ui/design-system";
@@ -24,6 +28,22 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
   const createSession = useCreateSession(studioId);
   const { toast } = useToast();
   const [, navigate] = useLocation();
+  const { canCreateSessions, hasMinRole } = useStudioRole(studioId);
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const isStudioAdmin = hasMinRole("studio_admin");
+
+  const deleteSession = useMutation({
+    mutationFn: (sessionId: string) =>
+      authFetch(`/api/studios/${studioId}/sessions/${sessionId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/studios", studioId, "sessions"] });
+      toast({ title: "Sessao excluida" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Erro ao excluir sessao", description: err?.message || "Permissao negada", variant: "destructive" });
+    },
+  });
 
   const [isOpen, setIsOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -51,7 +71,7 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
       <PageHeader
         title={pt.sessions.title}
         subtitle="Agende e gerencie sessoes de gravacao"
-        action={
+        action={canCreateSessions ? (
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-1.5 press-effect">
@@ -106,7 +126,7 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        }
+        ) : null}
       />
 
       <div className="space-y-3">
@@ -149,6 +169,19 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
 
                 <div className="flex items-center gap-3 shrink-0">
                   <StatusBadge status={session.status} />
+                  {(isStudioAdmin || (canCreateSessions && (session as any).createdBy === user?.id)) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1.5 h-8 text-xs relative z-10 text-red-500/70 hover:text-red-500"
+                      data-testid={`button-delete-session-${session.id}`}
+                      onClick={(e) => { e.stopPropagation(); deleteSession.mutate(session.id); }}
+                      disabled={deleteSession.isPending}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Excluir
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     className="gap-1.5 press-effect h-8 text-xs relative z-10"

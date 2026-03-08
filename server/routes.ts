@@ -273,7 +273,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(prod);
   });
 
-  app.post("/api/studios/:studioId/productions", requireAuth, requireStudioRole("studio_admin", "diretor"), async (req, res) => {
+  app.post("/api/studios/:studioId/productions", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
     try {
       const input = insertProductionSchema.parse({ ...req.body, studioId: req.params.studioId });
       const prod = await storage.createProduction(input);
@@ -283,7 +283,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.patch("/api/studios/:studioId/productions/:id", requireAuth, requireStudioRole("studio_admin", "diretor"), async (req, res) => {
+  app.patch("/api/studios/:studioId/productions/:id", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
     try {
       const prod = await storage.getProduction(req.params.id);
       if (!prod) return res.status(404).json({ message: "Producao nao encontrada" });
@@ -342,8 +342,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(session);
   });
 
-  app.post("/api/studios/:studioId/sessions", requireAuth, requireStudioRole("studio_admin", "diretor", "engenheiro_audio"), async (req, res) => {
+  app.post("/api/studios/:studioId/sessions", requireAuth, requireStudioRole("studio_admin", "diretor"), async (req, res) => {
     try {
+      const userId = (req.user as any)?.id;
       const input = insertSessionSchema.parse({
         title: req.body.title,
         productionId: req.body.productionId,
@@ -351,11 +352,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         scheduledAt: new Date(req.body.scheduledAt),
         durationMinutes: req.body.durationMinutes ?? 60,
         status: req.body.status ?? "scheduled",
+        createdBy: userId,
       });
       const session = await storage.createSession(input);
       res.status(201).json(session);
     } catch (err: any) {
       res.status(400).json({ message: "Dados invalidos" });
+    }
+  });
+
+  app.delete("/api/studios/:studioId/sessions/:id", requireAuth, requireStudioRole("studio_admin", "diretor"), async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.id);
+      if (!session || session.studioId !== req.params.studioId) return res.status(404).json({ message: "Sessao nao encontrada" });
+      const userId = (req.user as any)?.id;
+      const userRole = (req.user as any)?.role;
+      const studioRole = (req as any).studioRole;
+      const isAdmin = userRole === "platform_owner" || studioRole === "studio_admin";
+      if (!isAdmin && session.createdBy !== userId) {
+        return res.status(403).json({ message: "Voce so pode excluir sessoes criadas por voce" });
+      }
+      await storage.deleteSession(req.params.id);
+      res.status(200).json({ message: "Sessao excluida" });
+    } catch (err) {
+      res.status(500).json({ message: "Erro ao excluir sessao" });
     }
   });
 
@@ -458,13 +478,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.delete("/api/takes/:id", requireAuth, async (req, res) => {
+    try {
+      const [takeRecord] = await db.select().from(takes).where(eq(takes.id, req.params.id));
+      if (!takeRecord) return res.status(404).json({ message: "Take nao encontrado" });
+      const userId = (req.user as any)?.id;
+      const userRole = (req.user as any)?.role;
+      const isAdmin = userRole === "platform_owner" || userRole === "studio_admin";
+      if (!isAdmin && takeRecord.voiceActorId !== userId) {
+        return res.status(403).json({ message: "Voce so pode excluir seus proprios takes" });
+      }
+      await storage.deleteTake(req.params.id);
+      res.status(200).json({ message: "Take excluido" });
+    } catch (err) {
+      res.status(500).json({ message: "Erro ao excluir take" });
+    }
+  });
+
   // STAFF
   app.get("/api/studios/:studioId/staff", requireAuth, requireStudioAccess, async (req, res) => {
     const staffList = await storage.getStaff(req.params.studioId);
     res.status(200).json(staffList);
   });
 
-  app.post("/api/studios/:studioId/staff", requireAuth, requireStudioRole("studio_admin", "diretor"), async (req, res) => {
+  app.post("/api/studios/:studioId/staff", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
     try {
       const newStaff = await storage.createStaff({ ...req.body, studioId: req.params.studioId });
       res.status(201).json(newStaff);
