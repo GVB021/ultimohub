@@ -129,7 +129,7 @@ export const sessions = pgTable("recording_sessions", {
   durationMinutes: integer("duration_minutes").notNull().default(60),
   status: text("status").notNull().default("scheduled"),
   storageProvider: text("storage_provider").notNull().default("supabase"),
-  takesPath: text("takes_path").notNull().default("takes"),
+  takesPath: text("takes_path").notNull().default("uploads"),
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => {

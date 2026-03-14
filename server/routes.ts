@@ -61,6 +61,40 @@ function safeJobId(jobId: string): string | null {
   return cleaned;
 }
 
+function normalizeSegment(input: string) {
+  const raw = (input || "").trim() || "sem_nome";
+  const noAccents = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const snake = noAccents
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return snake || "sem_nome";
+}
+
+function normalizeTokenUpper(input: string) {
+  const raw = (input || "").trim() || "SEM_NOME";
+  const noAccents = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const token = noAccents
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+  return token || "SEM_NOME";
+}
+
+function normalizeTimecodeToken(input: string) {
+  const digits = String(input || "").replace(/\D/g, "");
+  return digits || "000000000";
+}
+
+function secondsToTimecodeToken(seconds: number) {
+  const totalMs = Math.max(0, Math.round((Number(seconds) || 0) * 1000));
+  const hh = String(Math.floor(totalMs / 3600000)).padStart(2, "0");
+  const mm = String(Math.floor((totalMs % 3600000) / 60000)).padStart(2, "0");
+  const ss = String(Math.floor((totalMs % 60000) / 1000)).padStart(2, "0");
+  const ms = String(totalMs % 1000).padStart(3, "0");
+  return `${hh}${mm}${ss}${ms}`;
+}
+
 function jobStatusPath(jobId: string): string {
   return path.join(mediaJobsDir, jobId, "status.json");
 }
@@ -543,7 +577,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const userId = (req.user as any)?.id;
       const settings = await storage.getAllSettings();
       const storageProvider = String(req.body.storageProvider || settings.DEFAULT_STORAGE_PROVIDER || "supabase");
-      const takesPath = String(req.body.takesPath || settings.DEFAULT_TAKES_PATH || "takes");
+      const takesPath = String(req.body.takesPath || settings.DEFAULT_TAKES_PATH || "uploads");
 
       if (storageProvider !== "supabase" && storageProvider !== "local") {
         return res.status(400).json({ message: "Storage invalido" });
@@ -656,7 +690,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const settings = await storage.getAllSettings();
       const storageProvider = (sessionCheck as any).storageProvider || settings.DEFAULT_STORAGE_PROVIDER || "supabase";
-      const takesPath = (sessionCheck as any).takesPath || settings.DEFAULT_TAKES_PATH || "takes";
+      const takesPath = (sessionCheck as any).takesPath || settings.DEFAULT_TAKES_PATH || "uploads";
       const supabaseBucket = settings.SUPABASE_BUCKET || "takes";
 
       let audioUrl = req.body.audioUrl || "";
@@ -691,12 +725,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         try {
           const status = await checkSupabaseConnection(false);
           if (!status.ok) throw new Error(status.reason || "Supabase indisponivel");
-          const objectPath = [
-            String(takesPath || "takes"),
-            `studio_${String((sessionCheck as any).studioId || "")}`,
-            `session_${sessionId}`,
-            `take_${take.id}.wav`,
-          ].join("/");
+          const timecodeToken =
+            normalizeTimecodeToken(req.body.timecode || "") !== "000000000"
+              ? normalizeTimecodeToken(req.body.timecode || "")
+              : secondsToTimecodeToken(Number(req.body.startTimeSeconds) || 0);
+
+          const studioId = String((sessionCheck as any).studioId || "");
+          const productionId = String((sessionCheck as any).productionId || "");
+
+          const [[studioRow], [productionRow], [characterRow], [actorRow]] = await Promise.all([
+            studioId
+              ? db.select({ name: studios.name }).from(studios).where(eq(studios.id, studioId))
+              : Promise.resolve([]),
+            productionId
+              ? db.select({ name: productions.name }).from(productions).where(eq(productions.id, productionId))
+              : Promise.resolve([]),
+            db.select({ name: characters.name }).from(characters).where(eq(characters.id, String(characterId))),
+            db.select({ artistName: users.artistName, displayName: users.displayName, fullName: users.fullName, firstName: users.firstName, lastName: users.lastName, email: users.email })
+              .from(users)
+              .where(eq(users.id, String(voiceActorId))),
+          ]);
+
+          const studioName = normalizeSegment(studioRow?.name || "");
+          const productionName = normalizeSegment(productionRow?.name || "");
+          const actorNameRaw =
+            actorRow?.artistName ||
+            actorRow?.displayName ||
+            actorRow?.fullName ||
+            `${actorRow?.firstName || ""} ${actorRow?.lastName || ""}`.trim() ||
+            actorRow?.email ||
+            "";
+          const actorFolder = normalizeSegment(actorNameRaw);
+          const characterFolder = normalizeSegment(characterRow?.name || "");
+
+          const actorToken = normalizeTokenUpper(actorNameRaw);
+          const characterToken = normalizeTokenUpper(characterRow?.name || "");
+          const filename = `${characterToken}_${actorToken}_${timecodeToken}.wav`;
+
+          const baseFolder = normalizeSegment(String(takesPath || "uploads"));
+          const pathSegments =
+            String(supabaseBucket || "").trim().toLowerCase() === baseFolder
+              ? [studioName, productionName, actorFolder, characterFolder, filename]
+              : [baseFolder, studioName, productionName, actorFolder, characterFolder, filename];
+          const objectPath = pathSegments.filter(Boolean).join("/");
           const publicUrl = await uploadToSupabaseStorage({
             bucket: supabaseBucket,
             path: objectPath,
@@ -1296,10 +1367,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) paths = parsed.map((v) => String(v)).filter(Boolean);
     } catch {}
-    if (!paths.length) paths = ["takes"];
+    if (!paths.length) paths = ["uploads"];
 
     const defaultProvider = settings.DEFAULT_STORAGE_PROVIDER === "local" ? "local" : "supabase";
-    const defaultPath = String(settings.DEFAULT_TAKES_PATH || paths[0] || "takes");
+    const defaultPath = String(settings.DEFAULT_TAKES_PATH || paths[0] || "uploads");
 
     res.status(200).json({
       defaultProvider,

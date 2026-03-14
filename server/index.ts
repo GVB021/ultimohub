@@ -106,12 +106,12 @@ app.use((req, res, next) => {
   await pool.query(`
     ALTER TABLE IF EXISTS recording_sessions
       ADD COLUMN IF NOT EXISTS storage_provider text DEFAULT 'supabase',
-      ADD COLUMN IF NOT EXISTS takes_path text DEFAULT 'takes';
+      ADD COLUMN IF NOT EXISTS takes_path text DEFAULT 'uploads';
   `);
   await pool.query(`
     UPDATE recording_sessions
     SET storage_provider = COALESCE(storage_provider, 'supabase'),
-        takes_path = COALESCE(takes_path, 'takes');
+        takes_path = COALESCE(takes_path, 'uploads');
   `);
 
   try {

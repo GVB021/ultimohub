@@ -1653,12 +1653,14 @@ export default function RecordingRoom() {
       const blob = wavToBlob(wavBuffer);
       const durationSeconds = getDurationSeconds(lastRecording.samples);
 
-      const tcSeconds = Math.floor(recordingStartTimecodeRef.current);
-      const hh = String(Math.floor(tcSeconds / 3600)).padStart(2, "0");
-      const mm = String(Math.floor((tcSeconds % 3600) / 60)).padStart(2, "0");
-      const ss = String(tcSeconds % 60).padStart(2, "0");
+      const tc = Math.max(0, recordingStartTimecodeRef.current);
+      const tcMs = Math.round(tc * 1000);
+      const hh = String(Math.floor(tcMs / 3600000)).padStart(2, "0");
+      const mm = String(Math.floor((tcMs % 3600000) / 60000)).padStart(2, "0");
+      const ss = String(Math.floor((tcMs % 60000) / 1000)).padStart(2, "0");
+      const ms = String(tcMs % 1000).padStart(3, "0");
       const cleanName = (s: string) => s.replace(/[^a-zA-Z0-9]/g, "");
-      const fileName = `${cleanName(activeProfile.characterName)}_${cleanName(activeProfile.voiceActorName)}_${hh}${mm}${ss}.WAV`;
+      const fileName = `${cleanName(activeProfile.characterName)}_${cleanName(activeProfile.voiceActorName)}_${hh}${mm}${ss}${ms}.wav`;
 
       console.log("[SaveTake] Saving with profile:", {
         character: activeProfile.characterName,
@@ -1675,6 +1677,8 @@ export default function RecordingRoom() {
       formData.append("voiceActorName", activeProfile.voiceActorName);
       formData.append("characterName", activeProfile.characterName);
       formData.append("lineIndex", String(currentLine));
+      formData.append("timecode", `${hh}:${mm}:${ss}.${ms}`);
+      formData.append("startTimeSeconds", String(tc));
       formData.append("durationSeconds", String(durationSeconds));
       formData.append("qualityScore", String(qualityMetrics?.score || 0));
 
