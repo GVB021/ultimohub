@@ -89,13 +89,13 @@ function groupTakes(takes: TakeDetail[]): GroupedData {
   return { studios };
 }
 
-function AudioPlayer({ audioUrl, takeId }: { audioUrl: string; takeId: string }) {
+function AudioPlayer({ takeId }: { takeId: string }) {
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const toggle = useCallback(() => {
     if (!audioRef.current) {
-      audioRef.current = new Audio(audioUrl);
+      audioRef.current = new Audio(`/api/takes/${takeId}/stream`);
       audioRef.current.onended = () => setPlaying(false);
     }
     if (playing) {
@@ -105,7 +105,7 @@ function AudioPlayer({ audioUrl, takeId }: { audioUrl: string; takeId: string })
       audioRef.current.play();
       setPlaying(true);
     }
-  }, [playing, audioUrl]);
+  }, [playing, takeId]);
 
   return (
     <Button
@@ -160,7 +160,7 @@ function TakeRow({
         onCheckedChange={() => onToggle(take.id)}
         data-testid={`checkbox-take-${take.id}`}
       />
-      <AudioPlayer audioUrl={take.audioUrl} takeId={take.id} />
+      <AudioPlayer takeId={take.id} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-mono text-foreground truncate" data-testid={`text-filename-${take.id}`}>

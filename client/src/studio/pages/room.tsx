@@ -1929,7 +1929,7 @@ export default function RecordingRoom() {
                           return;
                         }
                         setTakePreviewId(take.id);
-                        audio.src = take.audioUrl;
+                        audio.src = `/api/takes/${take.id}/stream`;
                         audio.play().catch(() => {});
                       }}
                       className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"

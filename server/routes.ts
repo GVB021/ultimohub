@@ -22,7 +22,16 @@ import { randomUUID } from "crypto";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { checkSupabaseConnection, configureSupabase, isSupabaseConfigured, uploadToSupabaseStorage } from "./lib/supabase";
+import { Readable } from "stream";
+import {
+  checkSupabaseConnection,
+  configureSupabase,
+  deleteFromSupabaseStorage,
+  downloadFromSupabaseStorageUrl,
+  isSupabaseConfigured,
+  parseSupabaseStorageUrl,
+  uploadToSupabaseStorage,
+} from "./lib/supabase";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -53,6 +62,48 @@ function safeAudioPath(audioUrl: string): string | null {
   const uploadsBase = path.resolve(process.cwd(), "public", "uploads");
   if (!resolved.startsWith(uploadsBase)) return null;
   return resolved;
+}
+
+function isHttpUrl(input: string) {
+  return /^https?:\/\//i.test(String(input || ""));
+}
+
+function filenameFromAudioUrl(audioUrl: string, fallback = "take.wav") {
+  const raw = String(audioUrl || "").trim();
+  if (!raw) return fallback;
+  if (!isHttpUrl(raw)) {
+    const base = path.basename(raw);
+    return base || fallback;
+  }
+  try {
+    const u = new URL(raw);
+    const base = path.basename(u.pathname);
+    return base || fallback;
+  } catch {
+    const parts = raw.split("/");
+    return parts[parts.length - 1] || fallback;
+  }
+}
+
+function toNodeReadable(body: any) {
+  if (!body) return null;
+  try {
+    return Readable.fromWeb(body);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchAudioResponse(audioUrl: string) {
+  if (isSupabaseConfigured() && parseSupabaseStorageUrl(audioUrl)) {
+    return await downloadFromSupabaseStorageUrl(audioUrl);
+  }
+  const res = await fetch(audioUrl);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${text}`.trim());
+  }
+  return res;
 }
 
 function safeJobId(jobId: string): string | null {
@@ -673,11 +724,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/sessions/:sessionId/takes", requireAuth, upload.single("audio"), async (req, res) => {
     try {
       const sessionId = req.params.sessionId;
-      const { characterId, voiceActorId, lineIndex, durationSeconds, qualityScore } = req.body;
-
-      if (!characterId || !voiceActorId || lineIndex === undefined) {
-        return res.status(400).json({ message: "Campos obrigatorios faltando" });
-      }
+      const body = z.object({
+        characterId: z.string().min(1),
+        voiceActorId: z.string().min(1),
+        lineIndex: z.coerce.number().int().min(0),
+        durationSeconds: z.coerce.number().min(0).optional(),
+        qualityScore: z.coerce.number().min(0).max(100).nullable().optional(),
+        audioUrl: z.string().optional(),
+        timecode: z.string().optional(),
+        startTimeSeconds: z.coerce.number().min(0).optional(),
+      }).parse(req.body);
 
       const sessionCheck = await verifySessionAccess(req, res, sessionId);
       if (!sessionCheck) return;
@@ -687,7 +743,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const takesPath = (sessionCheck as any).takesPath || settings.DEFAULT_TAKES_PATH || "uploads";
       const supabaseBucket = settings.SUPABASE_BUCKET || "takes";
 
-      let audioUrl = req.body.audioUrl || "";
+      let audioUrl = body.audioUrl || "";
       let contentType = "audio/wav";
 
       if (req.file) {
@@ -705,24 +761,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Audio nao enviado" });
       }
 
-      const take = await storage.createTake({
+      const takeInput = insertTakeSchema.parse({
         sessionId,
-        characterId,
-        voiceActorId,
-        lineIndex: Number(lineIndex),
+        characterId: body.characterId,
+        voiceActorId: body.voiceActorId,
+        lineIndex: body.lineIndex,
         audioUrl,
-        durationSeconds: Number(durationSeconds) || 0,
-        qualityScore: qualityScore ? Number(qualityScore) : null,
+        durationSeconds: body.durationSeconds ?? 0,
+        qualityScore: body.qualityScore ?? null,
       });
+      const take = await storage.createTake(takeInput);
 
       if (req.file && storageProvider === "supabase" && isSupabaseConfigured()) {
         try {
           const status = await checkSupabaseConnection(false);
           if (!status.ok) throw new Error(status.reason || "Supabase indisponivel");
           const timecodeToken =
-            normalizeTimecodeToken(req.body.timecode || "") !== "000000000"
-              ? normalizeTimecodeToken(req.body.timecode || "")
-              : secondsToTimecodeToken(Number(req.body.startTimeSeconds) || 0);
+            normalizeTimecodeToken(body.timecode || "") !== "000000000"
+              ? normalizeTimecodeToken(body.timecode || "")
+              : secondsToTimecodeToken(body.startTimeSeconds || 0);
 
           const studioId = String((sessionCheck as any).studioId || "");
           const productionId = String((sessionCheck as any).productionId || "");
@@ -734,10 +791,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             productionId
               ? db.select({ name: productions.name }).from(productions).where(eq(productions.id, productionId))
               : Promise.resolve([]),
-            db.select({ name: characters.name }).from(characters).where(eq(characters.id, String(characterId))),
+            db.select({ name: characters.name }).from(characters).where(eq(characters.id, String(body.characterId))),
             db.select({ artistName: users.artistName, displayName: users.displayName, fullName: users.fullName, firstName: users.firstName, lastName: users.lastName, email: users.email })
               .from(users)
-              .where(eq(users.id, String(voiceActorId))),
+              .where(eq(users.id, String(body.voiceActorId))),
           ]);
 
           const studioName = normalizeSegment(studioRow?.name || "");
@@ -771,7 +828,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           await storage.updateTakeAudioUrl(take.id, publicUrl);
           (take as any).audioUrl = publicUrl;
         } catch (e: any) {
-          logger.error("[Take Upload] Supabase upload failed", { message: e?.message });
+          logger.error("[Take Upload] Supabase upload failed", { takeId: take.id, message: e?.message });
         }
       }
 
@@ -847,22 +904,76 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const take = takeList[0];
       const user = (req as any).user!;
       if (user.role !== "platform_owner") {
-        const roles = await storage.getUserRolesInStudio(user.id, take.studioId);
-        if (!roles.includes("studio_admin")) {
-          return res.status(403).json({ message: "Acesso negado" });
+        const isOwner = String(take.voiceActorId || "") === String(user.id || "");
+        if (!isOwner) {
+          const roles = await storage.getUserRolesInStudio(user.id, take.studioId);
+          if (!roles.includes("studio_admin")) {
+            return res.status(403).json({ message: "Acesso negado" });
+          }
         }
       }
-      if (/^https?:\/\//i.test(take.audioUrl)) {
-        return res.redirect(take.audioUrl);
-      }
-      const filePath = safeAudioPath(take.audioUrl);
-      if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ message: "Arquivo nao encontrado" });
-      const filename = path.basename(take.audioUrl);
+      const filename = filenameFromAudioUrl(take.audioUrl, "take.wav").replace(/[^a-zA-Z0-9_.\-]/g, "_");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      res.setHeader("Content-Type", "audio/wav");
-      fs.createReadStream(filePath).pipe(res);
+
+      const filePath = safeAudioPath(take.audioUrl);
+      if (filePath && fs.existsSync(filePath)) {
+        res.setHeader("Content-Type", "audio/wav");
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+
+      if (isHttpUrl(take.audioUrl)) {
+        const upstream = await fetchAudioResponse(take.audioUrl);
+        const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        const stream = toNodeReadable(upstream.body);
+        if (!stream) return res.status(500).json({ message: "Falha ao obter stream" });
+        stream.pipe(res);
+        return;
+      }
+
+      return res.status(404).json({ message: "Arquivo nao encontrado" });
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Erro ao baixar take" });
+    }
+  });
+
+  app.get("/api/takes/:id/stream", requireAuth, async (req, res) => {
+    try {
+      const takeList = await storage.getTakesByIds([req.params.id]);
+      if (takeList.length === 0) return res.status(404).json({ message: "Take nao encontrado" });
+      const take = takeList[0];
+      const user = (req as any).user!;
+      if (user.role !== "platform_owner") {
+        const isOwner = String(take.voiceActorId || "") === String(user.id || "");
+        if (!isOwner) {
+          const roles = await storage.getUserRolesInStudio(user.id, take.studioId);
+          if (!roles.includes("studio_admin")) {
+            return res.status(403).json({ message: "Acesso negado" });
+          }
+        }
+      }
+
+      const filePath = safeAudioPath(take.audioUrl);
+      if (filePath && fs.existsSync(filePath)) {
+        res.setHeader("Content-Type", "audio/wav");
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+
+      if (isHttpUrl(take.audioUrl)) {
+        const upstream = await fetchAudioResponse(take.audioUrl);
+        const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        const stream = toNodeReadable(upstream.body);
+        if (!stream) return res.status(500).json({ message: "Falha ao obter stream" });
+        stream.pipe(res);
+        return;
+      }
+
+      return res.status(404).json({ message: "Arquivo nao encontrado" });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erro ao reproduzir take" });
     }
   });
 
@@ -900,9 +1011,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       archive.pipe(res);
       for (const take of takeList) {
         const filePath = safeAudioPath(take.audioUrl);
-        if (!filePath || !fs.existsSync(filePath)) continue;
-        const filename = path.basename(take.audioUrl);
-        archive.file(filePath, { name: filename });
+        const filename = filenameFromAudioUrl(take.audioUrl, `take_${take.id}.wav`).replace(/[^a-zA-Z0-9_.\-]/g, "_");
+        if (filePath && fs.existsSync(filePath)) {
+          archive.file(filePath, { name: filename });
+          continue;
+        }
+        if (isHttpUrl(take.audioUrl)) {
+          try {
+            const upstream = await fetchAudioResponse(take.audioUrl);
+            const stream = toNodeReadable(upstream.body);
+            if (!stream) throw new Error("Empty body");
+            archive.append(stream, { name: filename });
+          } catch (e: any) {
+            logger.warn("[Takes Bulk Download] Skip remote file", { takeId: take.id, message: e?.message });
+          }
+        }
       }
       await archive.finalize();
     } catch (err: any) {
@@ -930,9 +1053,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       archive.pipe(res);
       for (const take of takeList) {
         const filePath = safeAudioPath(take.audioUrl);
-        if (!filePath || !fs.existsSync(filePath)) continue;
-        const filename = path.basename(take.audioUrl);
-        archive.file(filePath, { name: filename });
+        const filename = filenameFromAudioUrl(take.audioUrl, `take_${take.id}.wav`).replace(/[^a-zA-Z0-9_.\-]/g, "_");
+        if (filePath && fs.existsSync(filePath)) {
+          archive.file(filePath, { name: filename });
+          continue;
+        }
+        if (isHttpUrl(take.audioUrl)) {
+          try {
+            const upstream = await fetchAudioResponse(take.audioUrl);
+            const stream = toNodeReadable(upstream.body);
+            if (!stream) throw new Error("Empty body");
+            archive.append(stream, { name: filename });
+          } catch (e: any) {
+            logger.warn("[Session Download] Skip remote file", { takeId: take.id, message: e?.message });
+          }
+        }
       }
       await archive.finalize();
     } catch (err: any) {
@@ -960,10 +1095,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       archive.pipe(res);
       for (const take of takeList) {
         const filePath = safeAudioPath(take.audioUrl);
-        if (!filePath || !fs.existsSync(filePath)) continue;
-        const filename = path.basename(take.audioUrl);
+        const filename = filenameFromAudioUrl(take.audioUrl, `take_${take.id}.wav`).replace(/[^a-zA-Z0-9_.\-]/g, "_");
         const sessionFolder = (take.sessionTitle || "Sessao").replace(/[^a-zA-Z0-9_\-]/g, "_");
-        archive.file(filePath, { name: `${sessionFolder}/${filename}` });
+        if (filePath && fs.existsSync(filePath)) {
+          archive.file(filePath, { name: `${sessionFolder}/${filename}` });
+          continue;
+        }
+        if (isHttpUrl(take.audioUrl)) {
+          try {
+            const upstream = await fetchAudioResponse(take.audioUrl);
+            const stream = toNodeReadable(upstream.body);
+            if (!stream) throw new Error("Empty body");
+            archive.append(stream, { name: `${sessionFolder}/${filename}` });
+          } catch (e: any) {
+            logger.warn("[Production Download] Skip remote file", { takeId: take.id, message: e?.message });
+          }
+        }
       }
       await archive.finalize();
     } catch (err: any) {
@@ -1350,6 +1497,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       supabaseReason: status.reason || null,
       supabaseBucket: settings.SUPABASE_BUCKET || "takes",
     });
+  });
+
+  app.post("/api/admin/storage/supabase/smoke", requireAuth, requireAdmin, async (_req, res) => {
+    const status = await checkSupabaseConnection(true);
+    if (!isSupabaseConfigured() || !status.ok) {
+      return res.status(400).json({ message: status.reason || "Supabase indisponivel" });
+    }
+    const settings = await storage.getAllSettings();
+    const bucket = settings.SUPABASE_BUCKET || "takes";
+    const path = `__smoke/${Date.now()}_${randomUUID()}.txt`;
+    const marker = `supabase-smoke-${randomUUID()}`;
+    const publicUrl = await uploadToSupabaseStorage({
+      bucket,
+      path,
+      buffer: Buffer.from(marker, "utf8"),
+      contentType: "text/plain",
+    });
+    const downloaded = await downloadFromSupabaseStorageUrl(publicUrl);
+    const text = await downloaded.text().catch(() => "");
+    const parsed = parseSupabaseStorageUrl(publicUrl);
+    if (parsed) {
+      try {
+        await deleteFromSupabaseStorage(parsed);
+      } catch (e: any) {
+        logger.warn("[Supabase Smoke] Cleanup failed", { bucket: parsed.bucket, path: parsed.path, message: e?.message });
+      }
+    }
+    if (!text.includes(marker)) {
+      return res.status(500).json({ message: "Falha ao validar leitura no Supabase" });
+    }
+    return res.status(200).json({ ok: true, bucket });
   });
 
   app.get("/api/storage/options", requireAuth, async (_req, res) => {
