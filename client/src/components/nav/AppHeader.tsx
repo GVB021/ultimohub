@@ -1,4 +1,4 @@
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { LanguageThemePill } from "@/components/nav/LanguageThemePill";
 import { useAuth } from "@/hooks/use-auth";
@@ -11,6 +11,7 @@ export function AppHeader({
   setLang: (lang: "en" | "pt") => void;
 }) {
   const { user, isLoading, logout, isLoggingOut } = useAuth();
+  const [, navigate] = useLocation();
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-transparent">
@@ -29,7 +30,7 @@ export function AppHeader({
         </div>
 
         <nav className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-[0.24em] text-muted-foreground uppercase">
-          <Link href="/hub-dub" className="hover:text-foreground transition-colors">
+          <Link href="/hub-dub/login" className="hover:text-foreground transition-colors">
             HUBDUB
           </Link>
           <Link href="/hubschool" className="hover:text-foreground transition-colors">
@@ -41,19 +42,25 @@ export function AppHeader({
         </nav>
 
         <div className="flex items-center gap-3">
-          {!isLoading && user && (
+          <LanguageThemePill lang={lang} setLang={setLang} />
+          {!isLoading && (
             <Button
               type="button"
               variant="outline"
               className="rounded-full px-5 h-10 bg-transparent"
-              onClick={logout}
-              disabled={isLoggingOut}
-              data-testid="button-logout"
+              onClick={() => {
+                if (user) {
+                  logout();
+                } else {
+                  navigate("/hub-dub/login");
+                }
+              }}
+              disabled={!!user && isLoggingOut}
+              data-testid="button-auth"
             >
-              SAIR
+              {user ? "SAIR" : "ENTRAR"}
             </Button>
           )}
-          <LanguageThemePill lang={lang} setLang={setLang} />
         </div>
       </div>
     </header>

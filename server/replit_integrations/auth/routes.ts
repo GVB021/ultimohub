@@ -135,6 +135,33 @@ export function registerAuthRoutes(app: Express): void {
     }
   });
 
+  app.post("/api/auth/request-password-reset", async (req, res) => {
+    try {
+      const { email } = z.object({ email: z.string().email() }).parse(req.body || {});
+      const safeEmail = email.toLowerCase().trim();
+
+      try {
+        const allUsers = await storage.getAllUsers();
+        const owners = allUsers.filter((u: any) => u.role === "platform_owner");
+        for (const owner of owners) {
+          await storage.createNotification({
+            userId: owner.id,
+            type: "password_reset_request",
+            title: "Solicitação de recuperação de senha",
+            message: `Solicitação recebida para: ${safeEmail}`,
+            relatedId: safeEmail,
+          });
+        }
+      } catch (notifyErr) {
+        logger.error("Error creating password reset request notifications", { error: String(notifyErr) });
+      }
+
+      return res.status(200).json({ ok: true });
+    } catch {
+      return res.status(200).json({ ok: true });
+    }
+  });
+
   app.post("/api/auth/register", async (req, res) => {
     try {
       const data = registerSchema.parse(req.body);
