@@ -15,6 +15,7 @@ import {
   type Production, type Session,
   insertProductionSchema, insertCharacterSchema, insertTakeSchema, insertSessionSchema,
 } from "@shared/schema";
+import { normalizePlatformRole } from "@shared/roles";
 import { requireAuth, requireAdmin, requireStudioAccess, requireStudioRole } from "./middleware/auth";
 import { logger } from "./lib/logger";
 import { spawn } from "child_process";
@@ -353,7 +354,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // STUDIOS
   app.get("/api/studios", requireAuth, async (req, res) => {
     const user = (req as any).user!;
-    if (user.role === "platform_owner") {
+    if (normalizePlatformRole(user.role) === "platform_owner") {
       const allStudios = await storage.getStudios();
       const studiosWithRoles = await Promise.all(
         allStudios.map(async (s) => ({ ...s, userRoles: ["platform_owner"] }))
@@ -376,6 +377,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(studio);
   });
 
+  const studioProfilePatchSchema = z.object({
+    data: z.record(z.any()),
+  }).strict();
+
+  app.get("/api/studios/:studioId/profile", requireAuth, requireStudioAccess, async (req, res) => {
+    try {
+      const profile = await storage.getStudioProfile(req.params.studioId);
+      return res.status(200).json({ profile });
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Erro ao buscar perfil do estudio" });
+    }
+  });
+
+  app.patch("/api/studios/:studioId/profile", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
+    try {
+      const parsed = studioProfilePatchSchema.parse(req.body || {});
+      const profile = await storage.upsertStudioProfile(req.params.studioId, parsed.data || {});
+      return res.status(200).json({ profile });
+    } catch (err: any) {
+      if (err?.errors) {
+        return res.status(400).json({ message: err.errors?.[0]?.message || "Dados invalidos" });
+      }
+      return res.status(500).json({ message: err?.message || "Erro ao atualizar perfil do estudio" });
+    }
+  });
+
   app.post("/api/studios", requireAuth, requireAdmin, async (req, res) => {
     try {
       const body = req.body;
@@ -390,23 +417,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "-" + Date.now();
       const ownerId = (req as any).user.id;
-      const studioData: any = {
-        name, slug, ownerId,
-        tradeName: body.tradeName || null, cnpj: body.cnpj || null,
-        legalRepresentative: body.legalRepresentative || null,
-        email: body.email || null, phone: body.phone || null, altPhone: body.altPhone || null,
-        street: body.street || null, addressNumber: body.addressNumber || null,
-        complement: body.complement || null, neighborhood: body.neighborhood || null,
-        city: body.city || null, state: body.state || null,
-        zipCode: body.zipCode || null, country: body.country || null,
-        recordingRooms: body.recordingRooms ? Number(body.recordingRooms) : null,
-        studioType: body.studioType || null,
-        website: body.website || null, instagram: body.instagram || null, linkedin: body.linkedin || null,
-        description: body.description || null,
-        foundedYear: body.foundedYear ? Number(body.foundedYear) : null,
-        employeeCount: body.employeeCount ? Number(body.employeeCount) : null,
-      };
+      const studioData: any = { name, slug, ownerId };
       const studio = await storage.createStudio(studioData, ownerId, studioAdminUserId || undefined);
+
+      const profileKeys = [
+        "tradeName",
+        "cnpj",
+        "legalRepresentative",
+        "email",
+        "phone",
+        "altPhone",
+        "street",
+        "addressNumber",
+        "complement",
+        "neighborhood",
+        "city",
+        "state",
+        "zipCode",
+        "country",
+        "recordingRooms",
+        "studioType",
+        "website",
+        "instagram",
+        "linkedin",
+        "description",
+        "foundedYear",
+        "employeeCount",
+      ] as const;
+
+      const profilePatch: Record<string, any> = {};
+      for (const k of profileKeys) {
+        const v = (body as any)[k];
+        if (typeof v === "string") {
+          const trimmed = v.trim();
+          if (trimmed) profilePatch[k] = trimmed;
+        } else if (typeof v === "number" && Number.isFinite(v)) {
+          profilePatch[k] = v;
+        } else if (v !== null && v !== undefined && v !== "") {
+          profilePatch[k] = v;
+        }
+      }
+      if (Object.keys(profilePatch).length) {
+        await storage.upsertStudioProfile(studio.id, profilePatch);
+      }
       if (studioAdminUserId) {
         await storage.createNotification({
           userId: studioAdminUserId,

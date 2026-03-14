@@ -1,7 +1,7 @@
 export * from "./models/auth";
 
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, integer, real, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, integer, real, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { users } from "./models/auth";
@@ -51,6 +51,19 @@ export const studios = pgTable("studios", {
   return {
     slugIdx: index("studios_slug_idx").on(table.slug),
     ownerIdIdx: index("studios_owner_id_idx").on(table.ownerId),
+  };
+});
+
+export const studioProfiles = pgTable("studio_profiles", {
+  studioId: varchar("studio_id")
+    .primaryKey()
+    .references(() => studios.id, { onDelete: "cascade" }),
+  data: jsonb("data").notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => {
+  return {
+    studioIdIdx: index("studio_profiles_studio_id_idx").on(table.studioId),
   };
 });
 
@@ -215,6 +228,7 @@ export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type PlatformSetting = typeof platformSettings.$inferSelect;
 export type UserRole = typeof userRoles.$inferSelect;
 export type Studio = typeof studios.$inferSelect;
+export type StudioProfile = typeof studioProfiles.$inferSelect;
 export type StudioMembership = typeof studioMemberships.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type Production = typeof productions.$inferSelect;

@@ -114,6 +114,26 @@ app.use((req, res, next) => {
         takes_path = COALESCE(takes_path, 'uploads');
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      user_id varchar PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      data jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS user_profiles_user_id_idx ON user_profiles(user_id);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS studio_profiles (
+      studio_id varchar PRIMARY KEY REFERENCES studios(id) ON DELETE CASCADE,
+      data jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS studio_profiles_studio_id_idx ON studio_profiles(studio_id);`);
+
   try {
     const { rows } = await pool.query(
       "SELECT key, value FROM platform_settings WHERE key IN ('SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY')"

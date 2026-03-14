@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { logger } from "../lib/logger";
+import { getHighestStudioRole, normalizePlatformRole, normalizeStudioRole } from "@shared/roles";
 
 export interface AuthUser {
   id: string;
@@ -28,7 +29,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return res.status(401).json({ message: "Unauthorized" });
   }
 
-  if (sessionUser.status === "pending" && sessionUser.role !== "platform_owner") {
+  const platformRole = normalizePlatformRole(sessionUser.role);
+  sessionUser.role = platformRole;
+  if (sessionUser.status === "pending" && platformRole !== "platform_owner") {
     return res.status(403).json({ message: "Conta aguardando aprovacao" });
   }
 
@@ -41,33 +44,15 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const user = req.user as any;
-  if (user?.role !== "platform_owner") {
+  if (normalizePlatformRole(user?.role) !== "platform_owner") {
     logger.warn("Unauthorized admin access attempt", { userId: user?.id, path: req.path });
     return res.status(403).json({ message: "Forbidden: platform_owner role required" });
   }
   next();
 }
 
-export const ROLE_HIERARCHY: Record<string, number> = {
-  platform_owner: 100,
-  studio_admin: 80,
-  diretor: 60,
-  engenheiro_audio: 40,
-  dublador: 20,
-  aluno: 10,
-};
-
 export function getHighestRole(roles: string[]): string {
-  let highest = roles[0] || "";
-  let highestLevel = ROLE_HIERARCHY[highest] ?? 0;
-  for (const r of roles) {
-    const level = ROLE_HIERARCHY[r] ?? 0;
-    if (level > highestLevel) {
-      highest = r;
-      highestLevel = level;
-    }
-  }
-  return highest;
+  return getHighestStudioRole(roles);
 }
 
 export async function requireStudioAccess(req: Request, res: Response, next: NextFunction) {
@@ -77,7 +62,7 @@ export async function requireStudioAccess(req: Request, res: Response, next: Nex
   const user = req.user as any;
   if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-  if (user.role === "platform_owner") {
+  if (normalizePlatformRole(user.role) === "platform_owner") {
     req.studioRole = "platform_owner";
     req.studioRoles = ["platform_owner"];
     return next();
@@ -85,7 +70,7 @@ export async function requireStudioAccess(req: Request, res: Response, next: Nex
 
   try {
     const { storage } = await import("../storage");
-    const roles = await storage.getUserRolesInStudio(user.id, studioId);
+    const roles = (await storage.getUserRolesInStudio(user.id, studioId)).map(normalizeStudioRole);
     if (roles.length === 0) {
       logger.warn("Unauthorized studio access attempt", { userId: user.id, studioId });
       return res.status(403).json({ message: "Voce nao tem acesso a este estudio" });
@@ -107,7 +92,7 @@ export function requireStudioRole(...allowedRoles: string[]) {
     const user = req.user as any;
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-    if (user.role === "platform_owner") {
+    if (normalizePlatformRole(user.role) === "platform_owner") {
       req.studioRole = "platform_owner";
       req.studioRoles = ["platform_owner"];
       return next();
@@ -115,12 +100,13 @@ export function requireStudioRole(...allowedRoles: string[]) {
 
     try {
       const { storage } = await import("../storage");
-      const roles = await storage.getUserRolesInStudio(user.id, studioId);
+      const roles = (await storage.getUserRolesInStudio(user.id, studioId)).map(normalizeStudioRole);
       if (roles.length === 0) {
         return res.status(403).json({ message: "Voce nao tem acesso a este estudio" });
       }
 
-      const hasPermission = roles.some(r => allowedRoles.includes(r));
+      const normalizedAllowed = allowedRoles.map(normalizeStudioRole);
+      const hasPermission = roles.some(r => normalizedAllowed.includes(r as any));
       if (!hasPermission) {
         return res.status(403).json({ message: "Voce nao tem permissao para esta acao" });
       }

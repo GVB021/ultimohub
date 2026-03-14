@@ -917,6 +917,11 @@ export default function RecordingRoom() {
   const recordingStartTimecodeRef = useRef(0);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scriptViewportRef = useRef<HTMLDivElement | null>(null);
+  const [scriptAutoFollow, setScriptAutoFollow] = useState(true);
+  const scriptAutoFollowRef = useRef(true);
+  const scriptProgrammaticScrollRef = useRef(false);
+  const scriptUserScrollIntentRef = useRef(false);
+  const scriptUserScrollIntentTimerRef = useRef<number | null>(null);
   const telepromptRafRef = useRef<number | null>(null);
   const telepromptLastTsRef = useRef<number | null>(null);
   const telepromptScriptRef = useRef<ScriptLine[]>([]);
@@ -967,6 +972,7 @@ export default function RecordingRoom() {
 
   const [controlMenuOpen, setControlMenuOpen] = useState(false);
   const [presenceUsers, setPresenceUsers] = useState<Array<{ userId: string; name: string; role?: string }>>([]);
+  const [textControllerUserId, setTextControllerUserId] = useState<string | null>(null);
   const [takesPopupOpen, setTakesPopupOpen] = useState(false);
   const [editingLineIndex, setEditingLineIndex] = useState<number | null>(null);
   const [editingLineText, setEditingLineText] = useState("");
@@ -997,6 +1003,20 @@ export default function RecordingRoom() {
   const canControl = useMemo(() => {
     return isPrivileged || globalControlEnabled || controlPermissions.has(user?.id || "");
   }, [isPrivileged, globalControlEnabled, controlPermissions, user]);
+
+  const canTextControl = useMemo(() => {
+    if (isPrivileged) return true;
+    return Boolean(textControllerUserId && user?.id && textControllerUserId === user.id);
+  }, [isPrivileged, textControllerUserId, user?.id]);
+
+  const emitTextControlEvent = useCallback(
+    (type: string, payload: any) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type, ...payload }));
+    },
+    [],
+  );
 
   useEffect(() => {
     (async () => {
@@ -1052,6 +1072,22 @@ export default function RecordingRoom() {
           }
           if (msg.type === "presence-sync" && Array.isArray(msg.users)) {
             setPresenceUsers(msg.users);
+            return;
+          }
+          if (msg.type === "text-control:state") {
+            setTextControllerUserId((msg as any).controllerUserId ?? null);
+            return;
+          }
+          if (msg.type === "text-control:update-line") {
+            const idx = (msg as any).lineIndex;
+            const text = (msg as any).text;
+            if (typeof idx === "number" && typeof text === "string") {
+              setLineEdits((prev) => ({ ...prev, [idx]: text }));
+              if (editingLineIndex === idx) {
+                setEditingLineIndex(null);
+                setEditingLineText("");
+              }
+            }
             return;
           }
           if (msg.type === "permission-granted" || msg.type === "grant-permission") {
@@ -1282,8 +1318,53 @@ export default function RecordingRoom() {
   }, [currentLine]);
 
   useEffect(() => {
+    scriptAutoFollowRef.current = scriptAutoFollow;
+  }, [scriptAutoFollow]);
+
+  const markScriptUserScrollIntent = useCallback(() => {
+    scriptUserScrollIntentRef.current = true;
+    if (scriptUserScrollIntentTimerRef.current) {
+      window.clearTimeout(scriptUserScrollIntentTimerRef.current);
+    }
+    scriptUserScrollIntentTimerRef.current = window.setTimeout(() => {
+      scriptUserScrollIntentRef.current = false;
+      scriptUserScrollIntentTimerRef.current = null;
+    }, 160);
+  }, []);
+
+  const handleScriptViewportScroll = useCallback(() => {
+    if (scriptProgrammaticScrollRef.current) return;
+    if (!scriptUserScrollIntentRef.current) return;
+    if (!scriptAutoFollowRef.current) return;
+    setScriptAutoFollow(false);
+  }, []);
+
+  const scrollScriptToLine = useCallback((idx: number, behavior: ScrollBehavior) => {
+    const viewport = scriptViewportRef.current;
+    const el = lineRefs.current[idx] || null;
+    if (!viewport || !el) return;
+    const top = el.offsetTop - (viewport.clientHeight / 2) + (el.offsetHeight / 2);
+    const maxScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const target = Math.min(maxScroll, Math.max(0, top));
+    scriptProgrammaticScrollRef.current = true;
+    viewport.scrollTo({ top: target, behavior });
+    queueMicrotask(() => {
+      scriptProgrammaticScrollRef.current = false;
+    });
+  }, []);
+
+  useEffect(() => {
     const viewport = scriptViewportRef.current;
     if (!viewport) return;
+
+    if (!scriptAutoFollow) {
+      if (telepromptRafRef.current) {
+        cancelAnimationFrame(telepromptRafRef.current);
+        telepromptRafRef.current = null;
+      }
+      telepromptLastTsRef.current = null;
+      return;
+    }
 
     if (telepromptRafRef.current) {
       cancelAnimationFrame(telepromptRafRef.current);
@@ -1357,7 +1438,11 @@ export default function RecordingRoom() {
       const tau = isPlaying ? 0.22 : 0.14;
       const alpha = 1 - Math.exp(-dt / tau);
       const current = vp.scrollTop;
+      scriptProgrammaticScrollRef.current = true;
       vp.scrollTop = current + (target - current) * alpha;
+      queueMicrotask(() => {
+        scriptProgrammaticScrollRef.current = false;
+      });
 
       telepromptRafRef.current = requestAnimationFrame(step);
     };
@@ -1371,7 +1456,7 @@ export default function RecordingRoom() {
       }
       telepromptLastTsRef.current = null;
     };
-  }, [isPlaying]);
+  }, [isPlaying, scriptAutoFollow]);
 
   useEffect(() => {
     if (!listeningFor) return;
@@ -1399,6 +1484,7 @@ export default function RecordingRoom() {
 
   const playVideo = useCallback(() => {
     if (!videoRef.current) return;
+    setScriptAutoFollow(true);
     videoRef.current.play().catch(() => {});
     setIsPlaying(true);
     emitVideoEvent("video-play", { currentTime: videoRef.current.currentTime });
@@ -1444,9 +1530,11 @@ export default function RecordingRoom() {
   }, [videoDuration, emitVideoEvent, canControl]);
 
   const handleLineClick = useCallback((idx: number) => {
-    if (!canControl) return;
+    if (!canTextControl) return;
     const line = scriptLines[idx];
     if (!line) return;
+    setScriptAutoFollow(true);
+    queueMicrotask(() => scrollScriptToLine(idx, "smooth"));
 
     if (loopSelectionMode === "selecting-start") {
       setCustomLoop({ start: line.start, end: line.end || line.start + 1 });
@@ -1469,7 +1557,7 @@ export default function RecordingRoom() {
         emitVideoEvent("video-seek", { currentTime: line.start, lineIndex: idx });
       }
     }
-  }, [scriptLines, emitVideoEvent, canControl, loopSelectionMode, customLoop, toast]);
+  }, [canTextControl, scriptLines, loopSelectionMode, customLoop, toast, scrollScriptToLine, emitVideoEvent]);
 
   const cleanupPreview = useCallback(() => {
     if (previewUrl) {
@@ -1972,18 +2060,18 @@ export default function RecordingRoom() {
         </div>
       )}
 
-      <header className="h-[52px] shrink-0 flex items-center justify-between px-5" style={{ background: "rgba(255,255,255,0.04)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-        <div className="flex items-center gap-4">
+      <header className="shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between px-2 sm:px-5 py-2 sm:py-0 gap-2 sm:gap-0" style={{ background: "rgba(255,255,255,0.04)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <Link href={`/hub-dub/studio/${studioId}/sessions`}>
             <button className="flex items-center gap-2 text-sm transition-colors" style={{ color: "rgba(255,255,255,0.45)" }} data-testid="button-exit-room">
               <ArrowLeft className="w-4 h-4" />
-              Sair
+              <span className="hidden sm:inline">Sair</span>
             </button>
           </Link>
-          <div className="h-4 w-px" style={{ background: "rgba(255,255,255,0.10)" }} />
-          <div className="flex items-baseline gap-2">
-            <span className="font-medium text-sm" style={{ color: "hsl(210 40% 96%)" }}>{production?.name || "Carregando\u2026"}</span>
-            <span className="text-xs" style={{ color: "rgba(255,255,255,0.45)" }}>{session?.title}</span>
+          <div className="hidden sm:block h-4 w-px" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="font-medium text-sm truncate max-w-[52vw] sm:max-w-none" style={{ color: "hsl(210 40% 96%)" }}>{production?.name || "Carregando\u2026"}</span>
+            <span className="text-xs truncate max-w-[36vw] sm:max-w-none" style={{ color: "rgba(255,255,255,0.45)" }}>{session?.title}</span>
           </div>
           {recordingStatus === "recording" && (
             <span className="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full" style={{ color: "hsl(0 72% 65%)", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.25)" }}>
@@ -1997,7 +2085,8 @@ export default function RecordingRoom() {
           )}
         </div>
 
-        <div className="flex items-center gap-3 text-xs relative">
+        <div className="relative -mx-2 px-2 sm:mx-0 sm:px-0 overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" as any }}>
+          <div className="flex items-center gap-3 text-xs whitespace-nowrap">
           {isPrivileged && (
             <>
               <button
@@ -2007,15 +2096,17 @@ export default function RecordingRoom() {
                 data-testid="button-open-text-control"
               >
                 <Edit3 className="w-3.5 h-3.5" />
-                Texto
+                <span className="hidden sm:inline">Controle de Texto</span>
               </button>
               {controlMenuOpen && (
                 <div
-                  className="absolute right-0 top-[44px] z-50 w-[360px] rounded-xl overflow-hidden"
+                  className="absolute right-0 top-[44px] z-50 w-[360px] rounded-xl overflow-hidden animate-in fade-in zoom-in-95"
                   style={{ background: "rgba(15,15,30,0.95)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 12px 48px rgba(0,0,0,0.5)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
                 >
                   <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                    <span className="text-xs font-semibold" style={{ color: "hsl(210 40% 96%)" }}>Controle do Texto</span>
+                    <span className="text-xs font-semibold" style={{ color: "hsl(210 40% 96%)" }}>Controle de Texto</span>
                     <button
                       onClick={() => setControlMenuOpen(false)}
                       className="transition-colors"
@@ -2027,50 +2118,80 @@ export default function RecordingRoom() {
                   </div>
                   <div className="px-4 py-3">
                     <div className="flex items-center justify-between mb-3">
-                      <span className="text-[10px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.40)" }}>Usuarios online</span>
+                      <span className="text-[10px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.40)" }}>Participantes</span>
                       <button
                         onClick={() => {
+                          const ok = window.confirm("Limpar o controlador atual e revogar permissoes temporarias?");
+                          if (!ok) return;
                           emitVideoEvent("revoke-all", {});
                           setControlPermissions(new Set());
                           setGlobalControlEnabled(false);
+                          setTextControllerUserId(null);
                         }}
                         className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors uppercase font-bold"
                         data-testid="button-revoke-all-text-control"
                       >
-                        Revogar todos
+                        Limpar
                       </button>
                     </div>
+                    <div className="text-[11px] mb-2" style={{ color: "rgba(255,255,255,0.55)" }}>
+                      Controlador atual:{" "}
+                      <span style={{ color: "rgba(255,255,255,0.85)" }}>
+                        {(() => {
+                          const roster = presenceUsers.length
+                            ? presenceUsers
+                            : (session?.participants || []).map((p: any) => ({ userId: p.userId, name: p.user?.fullName || p.user?.displayName || p.user?.email || "Usuario", role: p.role }));
+                          const name = roster.find((u: any) => u.userId === textControllerUserId)?.name;
+                          return textControllerUserId ? (name || "Usuario") : "Nenhum";
+                        })()}
+                      </span>
+                    </div>
+
                     <div className="flex flex-col gap-2 max-h-[280px] overflow-y-auto pr-1">
-                      {(presenceUsers.length ? presenceUsers : (session?.participants || []).map((p: any) => ({ userId: p.userId, name: p.user?.fullName || p.user?.displayName || "Usuario", role: p.role }))).map((p: any) => {
-                        const targetRole = String(p.role || "").toLowerCase();
-                        const targetIsPrivileged = new Set(["studio_admin", "diretor", "engenheiro_audio", "platform_owner", "owner", "director", "audio_engineer", "engineer", "admin"]).has(targetRole);
-                        const granted = controlPermissions.has(p.userId);
+                      {(presenceUsers.length
+                        ? presenceUsers
+                        : (session?.participants || []).map((p: any) => ({ userId: p.userId, name: p.user?.fullName || p.user?.displayName || p.user?.email || "Usuario", role: p.role }))
+                      ).map((p: any) => {
+                        const isSelected = Boolean(textControllerUserId && p.userId === textControllerUserId);
                         return (
-                          <div key={p.userId} className="flex items-center justify-between text-xs">
+                          <div
+                            key={p.userId}
+                            className="flex items-center justify-between text-xs rounded-lg px-2 py-1.5"
+                            style={isSelected ? { background: "rgba(59,130,246,0.10)", border: "1px solid rgba(59,130,246,0.18)" } : { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}
+                          >
                             <div className="flex items-center gap-2 min-w-0">
-                              <div className="w-5 h-5 rounded-full bg-blue-500/20 flex items-center justify-center text-[10px] font-bold shrink-0" style={{ color: "hsl(220 100% 65%)" }}>
+                              <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center text-[10px] font-bold shrink-0" style={{ color: "hsl(220 100% 65%)" }}>
                                 {String(p.name || "?")[0] || "?"}
                               </div>
-                              <span className="truncate" style={{ color: "rgba(255,255,255,0.70)" }}>{p.name || "Usuario"}</span>
-                              <span className="text-[9px] px-1 rounded bg-white/5 uppercase shrink-0" style={{ color: "rgba(255,255,255,0.30)" }}>{p.role || ""}</span>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="truncate" style={{ color: "rgba(255,255,255,0.78)" }}>{p.name || "Usuario"}</span>
+                                  {isSelected && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/15 uppercase shrink-0" style={{ color: "hsl(220 100% 75%)" }}>
+                                      Controlador
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] uppercase" style={{ color: "rgba(255,255,255,0.30)" }}>
+                                  {String(p.role || "").replace(/_/g, " ") || "participante"}
+                                </div>
+                              </div>
                             </div>
-                            {p.userId !== user?.id && !targetIsPrivileged && (
+
+                            {p.userId !== user?.id && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  emitVideoEvent(granted ? "revoke-permission" : "grant-permission", { targetUserId: p.userId });
-                                  setControlPermissions((prev) => {
-                                    const next = new Set(prev);
-                                    if (granted) next.delete(p.userId);
-                                    else next.add(p.userId);
-                                    return next;
-                                  });
+                                  const ok = window.confirm(`Transferir o controle de texto para ${p.name || "Usuario"}?`);
+                                  if (!ok) return;
+                                  setTextControllerUserId(p.userId);
+                                  emitTextControlEvent("text-control:set-controller", { targetUserId: p.userId });
                                 }}
                                 className="text-[10px] px-2 py-0.5 rounded transition-colors shrink-0"
-                                style={granted ? { background: "rgba(239,68,68,0.15)", color: "hsl(0 72% 65%)" } : { background: "rgba(59,130,246,0.15)", color: "hsl(220 100% 65%)" }}
-                                data-testid={`button-toggle-text-control-${p.userId}`}
+                                style={{ background: "rgba(59,130,246,0.15)", color: "hsl(220 100% 70%)" }}
+                                data-testid={`button-set-text-controller-${p.userId}`}
                               >
-                                {granted ? "Revogar" : "Conceder"}
+                                Selecionar
                               </button>
                             )}
                           </div>
@@ -2080,20 +2201,20 @@ export default function RecordingRoom() {
                   </div>
                 </div>
               )}
-              <div className="w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
+              <div className="hidden sm:block w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
             </>
           )}
           {!micReady && (
             <span className="flex items-center gap-1" style={{ color: "hsl(0 72% 65%)" }}>
-              <MicOff className="w-3.5 h-3.5" /> Sem mic
+              <MicOff className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Sem mic</span>
             </span>
           )}
           {micReady && (
             <span className="flex items-center gap-1" style={{ color: "hsl(160 84% 60%)" }}>
-              <Mic className="w-3.5 h-3.5" /> 48kHz / 24bit
+              <Mic className="w-3.5 h-3.5" /> <span className="hidden sm:inline">48kHz / 24bit</span>
             </span>
           )}
-          <div className="w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <div className="hidden sm:block w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
           {recordingProfile ? (
             <div className="flex items-center gap-1.5">
               <User className="w-3.5 h-3.5" style={{ color: "hsl(220 100% 65%)" }} />
@@ -2130,10 +2251,10 @@ export default function RecordingRoom() {
               data-testid="button-setup-profile"
             >
               <User className="w-3.5 h-3.5" />
-              Definir Perfil
+              <span className="hidden sm:inline">Definir Perfil</span>
             </button>
           )}
-          <div className="w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <div className="hidden sm:block w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
           <button
             onClick={() => setTakesPopupOpen(true)}
             className="transition-colors"
@@ -2141,26 +2262,27 @@ export default function RecordingRoom() {
             data-testid="button-open-takes-popup"
           >
             <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" style={{ color: "hsl(160 84% 60%)" }} />
-            {takeCount} take{takeCount !== 1 ? "s" : ""}
+            <span className="hidden sm:inline">{takeCount} take{takeCount !== 1 ? "s" : ""}</span>
           </button>
-          <div className="w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <div className="hidden sm:block w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
           <button
             onClick={() => setDeviceSettingsOpen(true)}
             className="flex items-center gap-1.5 transition-colors" style={{ color: "rgba(255,255,255,0.45)" }}
             data-testid="button-open-device-settings"
           >
             <Monitor className="w-3.5 h-3.5" />
-            Dispositivos
+            <span className="hidden sm:inline">Dispositivos</span>
           </button>
-          <div className="w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
+          <div className="hidden sm:block w-px h-4" style={{ background: "rgba(255,255,255,0.10)" }} />
           <button
             onClick={() => { setIsCustomizing(true); setPendingShortcuts(shortcuts); }}
             className="flex items-center gap-1.5 transition-colors" style={{ color: "rgba(255,255,255,0.45)" }}
             data-testid="button-open-shortcuts"
           >
             <Settings className="w-3.5 h-3.5" />
-            Atalhos
+            <span className="hidden sm:inline">Atalhos</span>
           </button>
+          </div>
         </div>
       </header>
 
@@ -2190,7 +2312,7 @@ export default function RecordingRoom() {
             )}
 
             {currentScriptLine && (
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/50 to-transparent pt-16 pb-5 px-8">
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/50 to-transparent pt-10 sm:pt-16 pb-3 sm:pb-5 px-4 sm:px-8">
                 <div className="flex items-center gap-2 mb-1.5">
                   <span className="text-[11px] font-mono text-amber-300/90 bg-black/50 px-1.5 py-0.5 rounded">
                     {formatTimecode(currentScriptLine.start)}
@@ -2199,7 +2321,7 @@ export default function RecordingRoom() {
                     {currentScriptLine.character}
                   </span>
                 </div>
-                <p className="text-white text-lg font-light leading-snug">
+                <p className="text-white text-[15px] sm:text-lg font-light leading-snug">
                   {currentScriptLine.text}
                 </p>
               </div>
@@ -2215,7 +2337,7 @@ export default function RecordingRoom() {
           </div>
 
           {videoDuration > 0 && (
-            <div className="px-5 py-2" style={{ background: "rgba(255,255,255,0.03)", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="px-3 sm:px-5 py-2" style={{ background: "rgba(255,255,255,0.03)", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
               <div className="flex items-center gap-3 text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.45)" }}>
                 <span>{formatTimecode(videoTime)}</span>
                 <div className="flex-1 relative h-1.5 rounded-full cursor-pointer group" style={{ background: "rgba(255,255,255,0.10)" }} onClick={(e) => {
@@ -2247,7 +2369,7 @@ export default function RecordingRoom() {
             </div>
           )}
 
-          <div className="shrink-0 px-4 sm:px-5 py-3 sm:py-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-0" style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+          <div className="shrink-0 px-3 sm:px-5 py-3 sm:py-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-0" style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
             <div className="w-full sm:w-56 shrink-0 flex flex-col justify-center gap-1 py-0 sm:py-3">
               <div className="flex items-center justify-between text-[10px] mb-0.5" style={{ color: "rgba(255,255,255,0.45)" }}>
                 <span className="uppercase tracking-wider">
@@ -2285,10 +2407,11 @@ export default function RecordingRoom() {
               />
             </div>
 
-            <div className="flex flex-wrap items-center justify-center gap-2">
+            <div className="w-full flex flex-col sm:flex-row items-center justify-center gap-2">
+              <div className="w-full sm:w-auto flex items-center justify-center gap-2">
               <button
                 onClick={() => seek(-2)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center transition-all" style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.05)" }}
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all" style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.05)" }}
                 data-testid="button-back-2s"
                 title={`Back 2s (${keyLabel(shortcuts.back)})`}
               >
@@ -2297,7 +2420,7 @@ export default function RecordingRoom() {
 
               <button
                 onClick={handlePlayPause}
-                className="w-11 h-11 rounded-full flex items-center justify-center transition-all" style={{ background: "rgba(255,255,255,0.08)", color: "hsl(210 40% 96%)", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center transition-all" style={{ background: "rgba(255,255,255,0.08)", color: "hsl(210 40% 96%)", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}
                 data-testid="button-play-pause"
                 title={`Play/Pause (${keyLabel(shortcuts.playPause)})`}
               >
@@ -2306,20 +2429,21 @@ export default function RecordingRoom() {
 
               <button
                 onClick={recordingStatus === "recording" ? handleStopRecording : handleStopPlayback}
-                className="w-9 h-9 rounded-xl flex items-center justify-center transition-all" style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.05)" }}
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all" style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.05)" }}
                 data-testid="button-stop"
                 title={`Stop (${keyLabel(shortcuts.stop)})`}
               >
                 <Square className="w-4 h-4" />
               </button>
 
-              <div className="w-px h-8 mx-1" style={{ background: "rgba(255,255,255,0.10)" }} />
+              <div className="hidden sm:block w-px h-8 mx-1" style={{ background: "rgba(255,255,255,0.10)" }} />
+              </div>
 
               {recordingStatus === "idle" || recordingStatus === "countdown" ? (
                 <button
                   onClick={startCountdown}
                   disabled={!micReady || recordingStatus === "countdown"}
-                  className="w-14 h-14 rounded-full flex items-center justify-center transition-all disabled:opacity-30"
+                  className="w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center transition-all disabled:opacity-30"
                   style={recordingStatus === "countdown"
                     ? { background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.30)", cursor: "wait", color: "rgba(255,255,255,0.70)" }
                     : { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.70)" }
@@ -2332,7 +2456,7 @@ export default function RecordingRoom() {
               ) : recordingStatus === "recording" ? (
                 <button
                   onClick={handleStopRecording}
-                  className="w-14 h-14 rounded-full flex items-center justify-center transition-all"
+                  className="w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center transition-all"
                   style={{ background: "hsl(0 72% 55%)", boxShadow: "0 0 24px rgba(239,68,68,0.4), 0 4px 12px rgba(0,0,0,0.3)" }}
                   data-testid="button-stop-recording"
                   title={`Stop recording (${keyLabel(shortcuts.stop)})`}
@@ -2363,7 +2487,7 @@ export default function RecordingRoom() {
                   </button>
                   <button
                     onClick={handleDiscard}
-                    className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all"
                     style={{ background: "rgba(239,68,68,0.08)", color: "rgba(239,68,68,0.60)", border: "1px solid rgba(239,68,68,0.15)" }}
                     data-testid="button-discard-take"
                   >
@@ -2372,11 +2496,11 @@ export default function RecordingRoom() {
                 </div>
               )}
 
-              <div className="w-px h-8 mx-1" style={{ background: "rgba(255,255,255,0.10)" }} />
+              <div className="hidden sm:block w-px h-8 mx-1" style={{ background: "rgba(255,255,255,0.10)" }} />
 
               <button
                 onClick={() => seek(2)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center transition-all" style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.05)" }}
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition-all" style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.05)" }}
                 data-testid="button-forward-2s"
                 title={`Forward 2s (${keyLabel(shortcuts.forward)})`}
               >
@@ -2463,14 +2587,70 @@ export default function RecordingRoom() {
             <span className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.40)" }}>
               Roteiro
             </span>
-            <span className="text-xs" style={{ color: "rgba(255,255,255,0.40)" }}>
-              <span className="font-mono" style={{ color: "rgba(255,255,255,0.75)" }}>{currentLine + 1}</span>
-              {" "}/{" "}
-              {scriptLines.length}
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => { setScriptAutoFollow(true); scrollScriptToLine(currentLine, "smooth"); }}
+                className="text-[10px] px-2 py-1 rounded-full transition-colors"
+                style={scriptAutoFollow
+                  ? { background: "rgba(59,130,246,0.14)", color: "hsl(220 100% 70%)", border: "1px solid rgba(59,130,246,0.25)" }
+                  : { background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.10)" }
+                }
+                data-testid="button-script-follow"
+                title={scriptAutoFollow ? "Seguindo automaticamente" : "Retomar sincronizacao"}
+              >
+                {scriptAutoFollow ? "AUTO" : "SEGUIR"}
+              </button>
+              <span className="text-xs" style={{ color: "rgba(255,255,255,0.40)" }}>
+                <span className="font-mono" style={{ color: "rgba(255,255,255,0.75)" }}>{currentLine + 1}</span>
+                {" "}/{" "}
+                {scriptLines.length}
+              </span>
+            </div>
           </div>
 
-          <div ref={scriptViewportRef} className="flex-1 overflow-y-auto py-3 px-4 min-h-0" style={{ scrollBehavior: "auto" }}>
+          <div
+            ref={scriptViewportRef}
+            className="flex-1 overflow-y-auto py-3 px-4 min-h-0 relative"
+            style={{ scrollBehavior: "auto", WebkitOverflowScrolling: "touch" as any }}
+            onScroll={handleScriptViewportScroll}
+            onWheelCapture={markScriptUserScrollIntent}
+            onTouchMoveCapture={markScriptUserScrollIntent}
+            onPointerDownCapture={markScriptUserScrollIntent}
+          >
+            {!scriptAutoFollow && scriptLines.length > 0 && (
+              <div className="sticky top-0 z-20 mb-3">
+                <div className="flex items-center justify-between px-3 py-2 rounded-xl" style={{ background: "rgba(15,15,30,0.88)", border: "1px solid rgba(255,255,255,0.10)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+                  <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.65)" }}>
+                    Rolagem livre
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setScriptAutoFollow(true); scrollScriptToLine(currentLine, "smooth"); }}
+                    className="text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-colors"
+                    style={{ background: "rgba(59,130,246,0.16)", color: "hsl(220 100% 70%)", border: "1px solid rgba(59,130,246,0.25)" }}
+                    data-testid="button-script-resume-follow"
+                  >
+                    Voltar ao atual
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {scriptLines.length > 1 && (
+              <div className="absolute right-1 top-3 bottom-3 w-[3px] rounded-full" style={{ background: "rgba(255,255,255,0.06)", pointerEvents: "none" }}>
+                <div
+                  className="absolute left-0 right-0 mx-auto w-full rounded-full"
+                  style={{
+                    height: 34,
+                    top: `${(currentLine / Math.max(1, scriptLines.length - 1)) * 100}%`,
+                    transform: "translateY(-50%)",
+                    background: "rgba(59,130,246,0.65)",
+                    boxShadow: "0 0 0 1px rgba(59,130,246,0.25)",
+                  }}
+                />
+              </div>
+            )}
             {scriptLines.length === 0 && !session && (
               <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: "rgba(255,255,255,0.40)" }}>
                 <div className="w-10 h-10 rounded-full animate-spin" style={{ border: "2px solid rgba(255,255,255,0.10)", borderTopColor: "hsl(220 100% 55%)" }} />
@@ -2492,12 +2672,13 @@ export default function RecordingRoom() {
                 <div
                   key={i}
                   ref={(el) => { lineRefs.current[i] = el; }}
-                  onClick={() => handleLineClick(i)}
-                  className="mb-3 px-5 py-4 lg:px-6 lg:py-5 rounded-xl cursor-pointer transition-all duration-300 relative overflow-hidden"
+                  onClick={canTextControl ? (() => handleLineClick(i)) : undefined}
+                  className={`mb-3 px-5 py-4 lg:px-6 lg:py-5 rounded-xl transition-all duration-300 relative overflow-hidden ${canTextControl ? "cursor-pointer" : "cursor-default"}`}
                   style={{
                     background: isActive ? "rgba(59, 130, 246, 0.08)" : (isInLoop ? "rgba(59, 130, 246, 0.04)" : "transparent"),
                     ...(isActive ? { boxShadow: "0 0 0 1px rgba(59,130,246,0.25), 0 0 12px rgba(59,130,246,0.08)" } : {}),
                     ...(isInLoop && !isActive ? { boxShadow: "inset 0 0 0 1px rgba(59,130,246,0.15)" } : {}),
+                    ...(canTextControl ? {} : { opacity: 0.92 }),
                   }}
                   data-testid={`script-line-${i}`}
                 >
@@ -2514,7 +2695,7 @@ export default function RecordingRoom() {
                     >
                       {line.character}
                     </span>
-                    {canControl && (
+                    {canTextControl && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -2558,15 +2739,20 @@ export default function RecordingRoom() {
                           }}
                           className="vhub-btn-xs vhub-btn-secondary"
                           data-testid={`button-cancel-edit-line-${i}`}
-                          disabled={updateScriptLineMutation.isPending}
                         >
                           Cancelar
                         </button>
                         <button
-                          onClick={() => updateScriptLineMutation.mutate({ lineIndex: i, text: editingLineText })}
+                          onClick={() => {
+                            if (!canTextControl) return;
+                            const nextText = String(editingLineText || "");
+                            setLineEdits((prev) => ({ ...prev, [i]: nextText }));
+                            emitTextControlEvent("text-control:update-line", { lineIndex: i, text: nextText });
+                            setEditingLineIndex(null);
+                            setEditingLineText("");
+                          }}
                           className="vhub-btn-xs vhub-btn-primary"
                           data-testid={`button-save-edit-line-${i}`}
-                          disabled={updateScriptLineMutation.isPending}
                         >
                           Salvar
                         </button>

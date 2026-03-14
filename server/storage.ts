@@ -3,6 +3,7 @@ import { eq, and, desc, inArray } from "drizzle-orm";
 import {
   studios,
   users,
+  studioProfiles,
   studioMemberships,
   userStudioRoles,
   productions,
@@ -39,6 +40,7 @@ import {
   insertStudioMembershipSchema,
   insertNotificationSchema,
 } from "@shared/schema";
+import { userProfiles } from "@shared/models/auth";
 import type { z } from "zod";
 
 type InsertStudio = z.infer<typeof insertStudioSchema>;
@@ -138,6 +140,11 @@ export interface IStorage {
   getActiveStudiosPublic(): Promise<{ id: string; name: string }[]>;
   getStudioStats(studioId: string): Promise<{ members: number; productions: number; sessions: number; takes: number; pendingMembers: number }>;
   getPendingMembersForStudio(studioId: string): Promise<(StudioMembership & { user?: User })[]>;
+
+  getUserProfile(userId: string): Promise<any>;
+  upsertUserProfile(userId: string, patch: Record<string, any>): Promise<any>;
+  getStudioProfile(studioId: string): Promise<any>;
+  upsertStudioProfile(studioId: string, patch: Record<string, any>): Promise<any>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -154,6 +161,38 @@ export class DatabaseStorage implements IStorage {
   async updateUserStatus(id: string, status: string): Promise<User> {
     const [updated] = await db.update(users).set({ status }).where(eq(users.id, id)).returning();
     return updated;
+  }
+
+  async getUserProfile(userId: string): Promise<any> {
+    const [row] = await db.select().from(userProfiles).where(eq(userProfiles.userId, userId));
+    return row?.data || {};
+  }
+
+  async upsertUserProfile(userId: string, patch: Record<string, any>): Promise<any> {
+    const existing = await this.getUserProfile(userId);
+    const data = { ...(existing || {}), ...(patch || {}) };
+    const [row] = await db
+      .insert(userProfiles)
+      .values({ userId, data })
+      .onConflictDoUpdate({ target: userProfiles.userId, set: { data, updatedAt: new Date() } })
+      .returning();
+    return row?.data || data;
+  }
+
+  async getStudioProfile(studioId: string): Promise<any> {
+    const [row] = await db.select().from(studioProfiles).where(eq(studioProfiles.studioId, studioId));
+    return row?.data || {};
+  }
+
+  async upsertStudioProfile(studioId: string, patch: Record<string, any>): Promise<any> {
+    const existing = await this.getStudioProfile(studioId);
+    const data = { ...(existing || {}), ...(patch || {}) };
+    const [row] = await db
+      .insert(studioProfiles)
+      .values({ studioId, data })
+      .onConflictDoUpdate({ target: studioProfiles.studioId, set: { data, updatedAt: new Date() } })
+      .returning();
+    return row?.data || data;
   }
 
   async getStudios(): Promise<Studio[]> {

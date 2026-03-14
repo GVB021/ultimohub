@@ -14,22 +14,50 @@ const loginSchema = z.object({
 const registerSchema = z.object({
   email: z.string().email("Email invalido"),
   password: z.string().min(6, "Senha deve ter pelo menos 6 caracteres"),
-  fullName: z.string().min(2, "Nome completo obrigatorio"),
-  artistName: z.string().optional().default(""),
-  phone: z.string().min(1, "Telefone obrigatorio"),
-  altPhone: z.string().optional().default(""),
-  birthDate: z.string().optional().default(""),
-  city: z.string().min(1, "Cidade obrigatoria"),
-  state: z.string().min(1, "Estado obrigatorio"),
-  country: z.string().min(1, "Pais obrigatorio"),
-  mainLanguage: z.string().min(1, "Idioma principal obrigatorio"),
-  additionalLanguages: z.string().optional().default(""),
-  experience: z.string().min(1, "Experiencia obrigatoria"),
-  specialty: z.string().min(1, "Especialidade obrigatoria"),
-  bio: z.string().min(1, "Bio obrigatoria"),
-  portfolioUrl: z.string().optional().default(""),
-  studioId: z.string().min(1, "Selecione um estudio"),
-});
+  fullName: z.string().min(2, "Nome obrigatorio"),
+  studioId: z.string().optional().default(""),
+  artistName: z.string().optional(),
+  phone: z.string().optional(),
+  altPhone: z.string().optional(),
+  birthDate: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  country: z.string().optional(),
+  mainLanguage: z.string().optional(),
+  additionalLanguages: z.string().optional(),
+  experience: z.string().optional(),
+  specialty: z.string().optional(),
+  bio: z.string().optional(),
+  portfolioUrl: z.string().optional(),
+}).passthrough();
+
+function buildComplementaryProfile(input: any) {
+  const keys = [
+    "artistName",
+    "phone",
+    "altPhone",
+    "birthDate",
+    "city",
+    "state",
+    "country",
+    "mainLanguage",
+    "additionalLanguages",
+    "experience",
+    "specialty",
+    "bio",
+    "portfolioUrl",
+  ] as const;
+
+  const out: Record<string, any> = {};
+  for (const k of keys) {
+    const v = (input as any)[k];
+    if (typeof v === "string") {
+      const trimmed = v.trim();
+      if (trimmed) out[k] = trimmed;
+    }
+  }
+  return out;
+}
 
 async function seedPlatformOwner() {
   if (!process.env.DATABASE_URL) {
@@ -115,56 +143,73 @@ export function registerAuthRoutes(app: Express): void {
         return res.status(409).json({ message: "Este email ja esta em uso" });
       }
 
-      const studio = await storage.getStudio(data.studioId);
-      if (!studio) {
-        return res.status(400).json({ message: "Estudio selecionado nao encontrado" });
+      const studioId = String(data.studioId || "").trim();
+      let studio: any = null;
+      if (studioId) {
+        studio = await storage.getStudio(studioId);
+        if (!studio) {
+          return res.status(400).json({ message: "Estudio selecionado nao encontrado" });
+        }
       }
 
       const user = await authStorage.createUser({
         email: data.email.toLowerCase().trim(),
         passwordHash: hashPassword(data.password),
         fullName: data.fullName,
-        artistName: data.artistName || null,
         displayName: data.fullName,
-        phone: data.phone,
-        altPhone: data.altPhone || null,
-        birthDate: data.birthDate || null,
-        city: data.city,
-        state: data.state,
-        country: data.country,
-        mainLanguage: data.mainLanguage,
-        additionalLanguages: data.additionalLanguages || null,
-        experience: data.experience,
-        specialty: data.specialty,
-        bio: data.bio,
-        portfolioUrl: data.portfolioUrl || null,
+        artistName: null,
+        phone: null,
+        altPhone: null,
+        birthDate: null,
+        city: null,
+        state: null,
+        country: null,
+        mainLanguage: null,
+        additionalLanguages: null,
+        experience: null,
+        specialty: null,
+        bio: null,
+        portfolioUrl: null,
         status: "pending",
         role: "user",
       });
 
-      await storage.createMembership({
-        userId: user.id,
-        studioId: data.studioId,
-        role: "pending",
-        status: "pending",
-      });
+      const complementary = buildComplementaryProfile(data);
+      if (Object.keys(complementary).length > 0) {
+        try {
+          await storage.upsertUserProfile(user.id, complementary);
+        } catch (profileErr) {
+          logger.error("Failed to upsert user profile", { error: String(profileErr), userId: user.id });
+        }
+      }
+
+      if (studioId) {
+        await storage.createMembership({
+          userId: user.id,
+          studioId,
+          role: "pending",
+          status: "pending",
+        });
+      }
 
       try {
-        const studioAdmins = await storage.getStudioAdmins(data.studioId);
-        for (const admin of studioAdmins) {
-          await storage.createNotification({
-            userId: admin.id,
-            type: "member_request",
-            title: "Novo cadastro pendente",
-            message: `${data.fullName} (${data.email}) solicitou acesso ao estudio ${studio.name}.`,
-            relatedId: user.id,
-          });
+        if (studioId && studio) {
+          const studioAdmins = await storage.getStudioAdmins(studioId);
+          for (const admin of studioAdmins) {
+            await storage.createNotification({
+              userId: admin.id,
+              type: "member_request",
+              title: "Novo cadastro pendente",
+              message: `${data.fullName} (${data.email}) solicitou acesso ao estudio ${studio.name}.`,
+              relatedId: user.id,
+            });
+          }
         }
       } catch (notifErr) {
         logger.error("Error sending notifications to studio admins", { error: String(notifErr) });
       }
 
-      logger.info("New user registered (pending)", { email: data.email, id: user.id, studioId: data.studioId });
+      logger.info("New user registered (pending)", { email: data.email, id: user.id, studioId: studioId || null });
       const { passwordHash, ...safeUser } = user;
       return res.status(201).json({ user: safeUser });
     } catch (err: any) {
@@ -199,6 +244,48 @@ export function registerAuthRoutes(app: Express): void {
     } catch (error) {
       logger.error("Error fetching user", { error: String(error) });
       res.status(500).json({ message: "Failed to fetch user" });
+    }
+  });
+
+  const userProfilePatchSchema = z.object({
+    artistName: z.string().optional(),
+    phone: z.string().optional(),
+    altPhone: z.string().optional(),
+    birthDate: z.string().optional(),
+    city: z.string().optional(),
+    state: z.string().optional(),
+    country: z.string().optional(),
+    mainLanguage: z.string().optional(),
+    additionalLanguages: z.string().optional(),
+    experience: z.string().optional(),
+    specialty: z.string().optional(),
+    bio: z.string().optional(),
+    portfolioUrl: z.string().optional(),
+  }).strict();
+
+  app.get("/api/users/me/profile", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const profile = await storage.getUserProfile(user.id);
+      return res.status(200).json({ profile });
+    } catch (err) {
+      logger.error("Error fetching user profile", { error: String(err) });
+      return res.status(500).json({ message: "Erro ao buscar perfil" });
+    }
+  });
+
+  app.patch("/api/users/me/profile", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const patch = userProfilePatchSchema.parse(req.body || {});
+      const profile = await storage.upsertUserProfile(user.id, patch);
+      return res.status(200).json({ profile });
+    } catch (err: any) {
+      if (err?.errors) {
+        return res.status(400).json({ message: err.errors?.[0]?.message || "Dados invalidos" });
+      }
+      logger.error("Error updating user profile", { error: String(err) });
+      return res.status(500).json({ message: "Erro ao atualizar perfil" });
     }
   });
 }
