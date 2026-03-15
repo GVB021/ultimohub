@@ -25,8 +25,6 @@ import {
   Loader2,
   Menu,
   Headphones,
-  Search,
-  Plus,
   Save,
   Repeat,
 } from "lucide-react";
@@ -415,14 +413,9 @@ export default function RecordingRoom() {
   const [volumeOverlay, setVolumeOverlay] = useState<number | null>(null);
   const [speedOverlay, setSpeedOverlay] = useState<number | null>(null);
   const [charSelectorOpen, setCharSelectorOpen] = useState(false);
-  const [characterSearch, setCharacterSearch] = useState("");
-  const [actorDraftName, setActorDraftName] = useState("");
-  const [newCharacterName, setNewCharacterName] = useState("");
   const [approvalModalTakeId, setApprovalModalTakeId] = useState<string | null>(null);
   const [approvalFinalStep, setApprovalFinalStep] = useState(false);
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
-  const [actorHistory, setActorHistory] = useState<string[]>([]);
-  const [characterHistory, setCharacterHistory] = useState<string[]>([]);
   const [onlySelectedCharacter, setOnlySelectedCharacter] = useState(false);
   const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
@@ -431,9 +424,15 @@ export default function RecordingRoom() {
   const countdownTimerRef = useRef<number | null>(null);
 
   const handleCharacterChange = (char: { id: string; name: string; voiceActorId: string | null }) => {
-    if (!recordingProfile) return;
+    const baseProfile: RecordingProfile = recordingProfile || {
+      actorName: user?.fullName || user?.displayName || "Dublador",
+      characterId: char.id,
+      characterName: char.name,
+      voiceActorId: user?.id || "",
+      voiceActorName: user?.fullName || user?.displayName || "Dublador",
+    };
     const newProfile = {
-      ...recordingProfile,
+      ...baseProfile,
       characterId: char.id,
       characterName: char.name,
       voiceActorId: char.voiceActorId || user?.id || "",
@@ -443,36 +442,6 @@ export default function RecordingRoom() {
     setCharSelectorOpen(false);
     toast({ title: `Personagem alterado para ${char.name}` });
   };
-
-  useEffect(() => {
-    if (!sessionId) return;
-    try {
-      const actorsRaw = localStorage.getItem(`vhub_actor_history_${sessionId}`);
-      const charsRaw = localStorage.getItem(`vhub_character_history_${sessionId}`);
-      setActorHistory(actorsRaw ? JSON.parse(actorsRaw) : []);
-      setCharacterHistory(charsRaw ? JSON.parse(charsRaw) : []);
-    } catch {
-      setActorHistory([]);
-      setCharacterHistory([]);
-    }
-  }, [sessionId]);
-
-  useEffect(() => {
-    setActorDraftName(recordingProfile?.voiceActorName || "");
-  }, [recordingProfile?.voiceActorName]);
-
-  const pushToHistory = useCallback((key: string, value: string) => {
-    const normalized = value.trim();
-    if (!normalized) return;
-    try {
-      const existingRaw = localStorage.getItem(key);
-      const existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
-      const next = [normalized, ...existing.filter((item) => item !== normalized)].slice(0, 12);
-      localStorage.setItem(key, JSON.stringify(next));
-      if (key.includes("actor_history")) setActorHistory(next);
-      if (key.includes("character_history")) setCharacterHistory(next);
-    } catch {}
-  }, []);
 
   const handleVideoTouchStart = (e: React.TouchEvent) => {
     const touch = e.touches[0];
@@ -527,24 +496,6 @@ export default function RecordingRoom() {
       });
     } catch {}
   }, [sessionId]);
-  const handleQuickCreateCharacter = useCallback(async () => {
-    if (!session?.productionId) return;
-    const name = newCharacterName.trim();
-    if (!name) return;
-    try {
-      const created = await authFetch(`/api/productions/${session.productionId}/characters`, {
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/productions", session.productionId, "characters"] });
-      pushToHistory(`vhub_character_history_${sessionId}`, name);
-      setNewCharacterName("");
-      toast({ title: `Personagem ${created.name} cadastrado` });
-      await logFeatureAudit("room.character.created", { characterName: created.name });
-    } catch (err: any) {
-      toast({ title: "Falha ao cadastrar personagem", description: String(err?.message || err), variant: "destructive" });
-    }
-  }, [session, newCharacterName, queryClient, pushToHistory, sessionId, toast, logFeatureAudit]);
 
   const scriptLines: ScriptLine[] = (() => {
     if (!production?.scriptJson) return [];
@@ -630,13 +581,26 @@ export default function RecordingRoom() {
     setApprovalFinalStep(false);
   }, [queryClient, sessionId, toast, logFeatureAudit]);
 
+  const handleDiscardTake = useCallback(async (takeId: string) => {
+    await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    await logFeatureAudit("room.take.discarded", { takeId });
+    toast({ title: "Take descartado" });
+  }, [queryClient, sessionId, toast, logFeatureAudit]);
+
   const [videoTime, setVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const scriptViewportRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const [scriptAutoFollow, setScriptAutoFollow] = useState(true);
-  const userScrollIntentTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [scriptAutoFollow, setScriptAutoFollow] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem(`vhub_script_follow_${sessionId}`);
+      return saved ? saved === "auto" : true;
+    } catch {
+      return true;
+    }
+  });
   const scrollAnchorsRef = useRef<ScrollAnchor[]>([]);
   const scrollSyncRafRef = useRef<number | null>(null);
   const scrollSyncLastTsRef = useRef<number | null>(null);
@@ -671,10 +635,18 @@ export default function RecordingRoom() {
     if (!user || !session?.participants) return false;
     if (user.role === "platform_owner") return true;
     const me = session.participants.find((p: any) => p.userId === user.id);
-    return me?.role === "director" || me?.role === "diretor" || me?.role === "studio_admin";
+    return me?.role === "director" || me?.role === "diretor" || me?.role === "studio_admin" || me?.role === "master";
   }, [user, session]);
 
   const isPrivileged = isDirector || user?.role === "platform_owner";
+  const isApproverRole = useCallback((role: string | undefined | null) => {
+    if (!role) return false;
+    const normalized = role.toLowerCase();
+    return normalized === "director" || normalized === "diretor" || normalized === "studio_admin" || normalized === "master" || normalized === "platform_owner";
+  }, []);
+  const hasApproverPresent = useMemo(() => {
+    return presenceUsers.some((p: any) => isApproverRole(p?.role) && p?.userId !== user?.id);
+  }, [presenceUsers, isApproverRole, user?.id]);
 
   const canTextControl = useMemo(() => {
     if (isPrivileged) return true;
@@ -766,12 +738,11 @@ export default function RecordingRoom() {
     return () => window.removeEventListener("resize", onResize);
   }, [rebuildScrollAnchors]);
 
-  const markScriptUserScrollIntent = useCallback(() => {
-    setScriptAutoFollow(false);
-    if (userScrollIntentTimeoutRef.current) clearTimeout(userScrollIntentTimeoutRef.current);
-    userScrollIntentTimeoutRef.current = setTimeout(() => {
-    }, 10000);
-  }, []);
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(`vhub_script_follow_${sessionId}`, scriptAutoFollow ? "auto" : "manual");
+    } catch {}
+  }, [scriptAutoFollow, sessionId]);
 
   const syncScrollToCurrentVideoTime = useCallback(() => {
     const viewport = scriptViewportRef.current;
@@ -914,7 +885,7 @@ export default function RecordingRoom() {
     };
   }, []);
 
-  const uploadTakeForDirector = useCallback(async (result: RecordingResult, metrics: QualityMetrics | null) => {
+  const uploadTakeForDirector = useCallback(async (result: RecordingResult, metrics: QualityMetrics | null, autoApprove: boolean) => {
     if (!recordingProfile) {
       throw new Error("Perfil de gravação não configurado.");
     }
@@ -930,16 +901,15 @@ export default function RecordingRoom() {
     if (metrics) {
       formData.append("qualityScore", String(metrics.score));
     }
+    formData.append("isPreferred", String(autoApprove));
     const take = await authFetch(`/api/sessions/${sessionId}/takes`, {
       method: "POST",
       body: formData,
     });
     setLastUploadedTakeId(take.id);
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
-    pushToHistory(`vhub_actor_history_${sessionId}`, recordingProfile.voiceActorName || actorDraftName);
-    pushToHistory(`vhub_character_history_${sessionId}`, recordingProfile.characterName);
     return take;
-  }, [recordingProfile, sessionId, user?.id, currentLine, queryClient, pushToHistory, actorDraftName]);
+  }, [recordingProfile, sessionId, user?.id, currentLine, queryClient]);
 
   const startCountdown = useCallback(() => {
     if (recordingStatus !== "idle" || !micState) return;
@@ -1007,14 +977,20 @@ export default function RecordingRoom() {
     });
     try {
       setIsSaving(true);
-      await uploadTakeForDirector(result, metrics);
-      toast({ title: isDirector ? "Take recebido para aprovação" : "Take enviado para o diretor" });
+      const autoApprove = !hasApproverPresent && !isPrivileged;
+      await uploadTakeForDirector(result, metrics, autoApprove);
+      if (autoApprove) {
+        toast({ title: "Take salvo automaticamente" });
+        await logFeatureAudit("room.take.saved_without_approver", { lineIndex: currentLine });
+      } else {
+        toast({ title: isDirector ? "Take recebido para aprovação" : "Take enviado para aprovação" });
+      }
     } catch (err: any) {
       toast({ title: "Erro ao enviar take", description: String(err?.message || err), variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
-  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector]);
+  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -1362,6 +1338,13 @@ export default function RecordingRoom() {
                         Aprovar
                       </button>
                       <button
+                        onClick={() => handleDiscardTake(take.id)}
+                        className="px-2.5 h-8 rounded-lg text-xs font-medium bg-destructive/15 text-destructive hover:bg-destructive/25 transition-colors"
+                        title="Descartar take"
+                      >
+                        Descartar
+                      </button>
+                      <button
                         onClick={() => handleDownloadTake(take)}
                         className="p-2 rounded-lg transition-colors text-muted-foreground bg-muted/60 hover:text-foreground hover:bg-muted"
                         title="Baixar take"
@@ -1423,124 +1406,49 @@ export default function RecordingRoom() {
             <span className="text-[10px] text-muted-foreground truncate">{session?.title}</span>
           </div>
           
-          {recordingProfile && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 ml-2 group cursor-pointer hover:bg-white/10 transition-all relative" onClick={() => setCharSelectorOpen(!charSelectorOpen)}>
-              <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-primary text-[10px] font-bold">
-                {recordingProfile.characterName[0]}
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-foreground leading-tight">{recordingProfile.characterName}</span>
-                <span className="text-[9px] text-muted-foreground leading-tight">{recordingProfile.voiceActorName}</span>
-              </div>
-              <ChevronRight className={cn("w-3 h-3 text-muted-foreground transition-transform", charSelectorOpen && "rotate-90")} />
-              
-              <AnimatePresence>
-                {charSelectorOpen && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    className="absolute top-full left-0 mt-2 w-72 rounded-2xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2 z-[100]"
-                  >
-                    <div className="text-[9px] uppercase tracking-widest text-muted-foreground px-3 py-2 border-b border-border/50 mb-1">Dublador e Personagem</div>
-                    <div className="px-2 py-2 space-y-2 border-b border-border/50 mb-2">
-                      <div className="relative">
-                        <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                        <input
-                          value={actorDraftName}
-                          onChange={(e) => setActorDraftName(e.target.value)}
-                          placeholder="Nome do dublador"
-                          className="w-full h-8 pl-7 pr-2 rounded-lg bg-background/70 border border-border text-xs"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </div>
-                      <div className="relative">
-                        <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                        <input
-                          value={characterSearch}
-                          onChange={(e) => setCharacterSearch(e.target.value)}
-                          placeholder="Buscar personagem"
-                          className="w-full h-8 pl-7 pr-2 rounded-lg bg-background/70 border border-border text-xs"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          value={newCharacterName}
-                          onChange={(e) => setNewCharacterName(e.target.value)}
-                          placeholder="Cadastrar personagem"
-                          className="flex-1 h-8 px-2 rounded-lg bg-background/70 border border-border text-xs"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleQuickCreateCharacter(); }}
-                          className="h-8 px-2 rounded-lg bg-primary/20 text-primary hover:bg-primary/30"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      {actorHistory.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {actorHistory.slice(0, 4).map((name) => (
-                            <button
-                              key={name}
-                              onClick={(e) => { e.stopPropagation(); setActorDraftName(name); }}
-                              className="px-2 h-6 rounded-full text-[10px] bg-muted/70 text-muted-foreground hover:text-foreground"
-                            >
-                              {name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="max-h-64 overflow-y-auto custom-scrollbar">
-                      {charactersList?.filter((char) => char.name.toLowerCase().includes(characterSearch.toLowerCase())).map((char) => (
-                        <button
-                          key={char.id}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCharacterChange(char);
-                            if (recordingProfile && actorDraftName.trim()) {
-                              const newProfile = { ...recordingProfile, voiceActorName: actorDraftName.trim() };
-                              setRecordingProfile(newProfile);
-                              localStorage.setItem(`vhub_rec_profile_${sessionId}`, JSON.stringify(newProfile));
-                              pushToHistory(`vhub_actor_history_${sessionId}`, actorDraftName.trim());
-                            }
-                            pushToHistory(`vhub_character_history_${sessionId}`, char.name);
-                          }}
-                          className={cn(
-                            "w-full flex items-center gap-3 p-2 rounded-xl transition-all hover:bg-primary/10 text-left",
-                            recordingProfile.characterId === char.id ? "bg-primary/10 border border-primary/20" : "border border-transparent"
-                          )}
-                        >
-                          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xs font-bold">
-                            {char.name[0]}
-                          </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-xs font-bold text-foreground truncate">{char.name}</span>
-                            <span className="text-[10px] text-muted-foreground truncate">{char.voiceActorId ? "Ocupado" : "Disponivel"}</span>
-                          </div>
-                        </button>
-                      ))}
-                      {characterHistory.length > 0 && (
-                        <div className="px-2 pt-2 text-[10px] text-muted-foreground">
-                          Histórico: {characterHistory.slice(0, 3).join(" • ")}
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
-          {!recordingProfile && (
+          <div className="relative ml-2">
             <button
-              onClick={() => setShowProfilePanel(true)}
-              className="h-8 px-3 rounded-full bg-primary/15 text-primary text-[11px] font-semibold hover:bg-primary/25 transition-colors"
+              onClick={() => setCharSelectorOpen((v) => !v)}
+              className="h-7 px-2 rounded-md bg-white/5 border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/10 flex items-center gap-1.5"
+              data-testid="button-character-selector"
             >
-              Cadastrar dublador/personagem
+              <User className="w-3.5 h-3.5" />
+              <span className="max-w-[140px] truncate">{recordingProfile?.characterName || "Personagem"}</span>
+              <ChevronRight className={cn("w-3 h-3 transition-transform", charSelectorOpen && "rotate-90")} />
             </button>
-          )}
+            <AnimatePresence>
+              {charSelectorOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 4 }}
+                  className="absolute top-full left-0 mt-2 w-64 rounded-xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2 z-[100]"
+                >
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1.5 border-b border-border/60 mb-1">Selecionar personagem</div>
+                  <div className="max-h-64 overflow-y-auto custom-scrollbar">
+                    {(charactersList || []).map((char) => (
+                      <button
+                        key={char.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCharacterChange(char);
+                        }}
+                        className={cn(
+                          "w-full text-left px-2 py-2 rounded-md text-xs transition-colors",
+                          recordingProfile?.characterId === char.id ? "bg-primary/12 text-primary" : "text-foreground hover:bg-muted/60"
+                        )}
+                      >
+                        {char.name}
+                      </button>
+                    ))}
+                    {(!charactersList || charactersList.length === 0) && (
+                      <div className="px-2 py-3 text-xs text-muted-foreground">Nenhum personagem cadastrado.</div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-3">
@@ -1573,9 +1481,10 @@ export default function RecordingRoom() {
               <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
                 <button
                   onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); }}
-                  className="h-9 px-3 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 text-[11px] font-semibold"
+                  className="h-7 px-2 rounded-md bg-white/5 border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/10 flex items-center gap-1"
                   data-testid="button-room-panel"
                 >
+                  <Monitor className="w-3.5 h-3.5" />
                   PAINEL
                 </button>
               </Link>
@@ -1766,8 +1675,10 @@ export default function RecordingRoom() {
                         Aprovar
                       </button>
                     </>
-                  ) : (
+                  ) : hasApproverPresent ? (
                     <span>Take enviado. Aguardando aprovação do diretor.</span>
+                  ) : (
+                    <span>Take salvo automaticamente (sem aprovador na sala).</span>
                   )}
                 </div>
               )}
@@ -1796,12 +1707,13 @@ export default function RecordingRoom() {
                   if (next) syncScrollToCurrentVideoTime();
                   logFeatureAudit("room.scroll.mode_changed", { mode: next ? "automatic" : "manual" });
                 }}
-                className={cn(
-                  "text-[10px] px-2 py-1 rounded-full transition-colors border",
-                  scriptAutoFollow ? "bg-primary/15 text-primary border-primary/25" : "bg-muted/60 text-muted-foreground border-border/70"
-                )}
+                className="text-[10px] px-2 py-1 rounded-full transition-colors border bg-muted/60 text-muted-foreground border-border/70 flex items-center gap-2"
+                data-testid="toggle-scroll-mode"
               >
-                {scriptAutoFollow ? "ROLAGEM AUTOMÁTICA" : "ROLAGEM MANUAL"}
+                <span>{scriptAutoFollow ? "ROLAGEM AUTOMÁTICA" : "ROLAGEM MANUAL"}</span>
+                <span className={cn("w-7 h-4 rounded-full transition-colors relative", scriptAutoFollow ? "bg-primary/30" : "bg-muted")}>
+                  <span className={cn("absolute top-0.5 h-3 w-3 rounded-full bg-primary transition-all", scriptAutoFollow ? "left-3.5" : "left-0.5")} />
+                </span>
               </button>
               <button
                 type="button"
@@ -1830,9 +1742,6 @@ export default function RecordingRoom() {
           <div
             ref={scriptViewportRef}
             className="flex-1 overflow-y-auto py-3 px-4 min-h-0 relative custom-scrollbar"
-            onWheelCapture={markScriptUserScrollIntent}
-            onTouchMoveCapture={markScriptUserScrollIntent}
-            onPointerDownCapture={markScriptUserScrollIntent}
             onScrollCapture={() => {
               scrollSyncCurrentRef.current = scriptViewportRef.current?.scrollTop || 0;
             }}

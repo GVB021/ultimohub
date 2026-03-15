@@ -227,7 +227,7 @@ async function canManageSessionTakes(user: any, sessionId: string, studioId: str
   const participants = await storage.getSessionParticipants(sessionId);
   const self = participants.find((p) => p.userId === user.id);
   if (!self) return false;
-  return self.role === "director" || self.role === "diretor" || self.role === "studio_admin";
+  return self.role === "director" || self.role === "diretor" || self.role === "studio_admin" || self.role === "master";
 }
 
 function studioTimecodeSettingKey(studioId: string): string {
@@ -917,6 +917,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         audioUrl: z.string().optional(),
         timecode: z.string().optional(),
         startTimeSeconds: z.coerce.number().min(0).optional(),
+        isPreferred: z.coerce.boolean().optional(),
       }).parse(req.body);
 
       const sessionCheck = await verifySessionAccess(req, res, sessionId);
@@ -959,6 +960,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         audioUrl,
         durationSeconds: body.durationSeconds ?? 0,
         qualityScore: body.qualityScore ?? null,
+        isPreferred: Boolean(body.isPreferred),
       });
       const take = await storage.createTake(takeInput);
       logger.info("[Take Upload] DB row created", {
@@ -968,6 +970,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         voiceActorId: take.voiceActorId,
         durationSeconds: take.durationSeconds,
       });
+      if (take.isPreferred) {
+        await storage.createAuditLog({
+          userId: (req as any).user?.id || null,
+          action: "take.saved_without_approval",
+          details: JSON.stringify({ takeId: take.id, sessionId: take.sessionId, lineIndex: take.lineIndex }),
+        });
+      }
 
       if (req.file && storageProvider === "supabase" && isSupabaseConfigured()) {
         try {
@@ -1084,12 +1093,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const [takeRecord] = await db.select().from(takes).where(eq(takes.id, req.params.id));
       if (!takeRecord) return res.status(404).json({ message: "Take nao encontrado" });
-      const userId = (req.user as any)?.id;
-      const userRole = (req.user as any)?.role;
-      const isAdmin = userRole === "platform_owner" || userRole === "studio_admin";
-      if (!isAdmin && takeRecord.voiceActorId !== userId) {
-        return res.status(403).json({ message: "Voce so pode excluir seus proprios takes" });
-      }
+      const user = (req as any).user!;
+      const session = await storage.getSession(takeRecord.sessionId);
+      const canManage = session ? await canManageSessionTakes(user, takeRecord.sessionId, session.studioId) : false;
+      const isOwner = String(takeRecord.voiceActorId) === String(user.id);
+      if (!canManage && !isOwner) return res.status(403).json({ message: "Acesso negado" });
       await storage.deleteTake(req.params.id);
       res.status(200).json({ message: "Take excluido" });
     } catch (err) {

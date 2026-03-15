@@ -20,7 +20,16 @@ test("RecordingRoom expõe filtros e labels novos de rolagem", () => {
   assert.match(room, /APENAS PERSONAGEM/);
   assert.match(room, /ROLAGEM AUTOMÁTICA/);
   assert.match(room, /ROLAGEM MANUAL/);
+  assert.match(room, /toggle-scroll-mode/);
   assert.match(room, /Loop ativo/);
+});
+
+test("Seleção de personagem usa lista simples sem busca e sem cadastro inline", () => {
+  const room = readFileSync(roomPath, "utf8");
+  assert.match(room, /button-character-selector/);
+  assert.match(room, /Selecionar personagem/);
+  assert.doesNotMatch(room, /Buscar personagem/);
+  assert.doesNotMatch(room, /Cadastrar personagem/);
 });
 
 test("Studio Admin possui seletor de formato de timecode", () => {
@@ -34,4 +43,6 @@ test("API inclui endpoints de timecode por estúdio e auditoria de sessão", () 
   const routes = readFileSync(routesPath, "utf8");
   assert.match(routes, /\/api\/studios\/:studioId\/timecode-format/);
   assert.match(routes, /\/api\/sessions\/:sessionId\/audit-events/);
+  assert.match(routes, /isPreferred: z\.coerce\.boolean\(\)\.optional\(\)/);
+  assert.match(routes, /role === "master"/);
 });
