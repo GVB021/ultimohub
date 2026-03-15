@@ -15,7 +15,7 @@ export default function PresentationLanding() {
     <header className="fixed top-0 left-0 right-0 z-50 bg-background/70 backdrop-blur-[20px] border-b border-border/60 transition-colors duration-300">
       <div className="max-w-[1400px] mx-auto px-6 h-[60px] flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-lg flex items-center justify-center backdrop-blur-xl">
+          <div className="w-8 h-8 bg-white/60 border border-black/10 rounded-lg flex items-center justify-center backdrop-blur-xl">
             <Network className="w-5 h-5 text-primary" />
           </div>
           <span className="text-lg font-light tracking-[0.18em] text-foreground">VOICE.HUB</span>
@@ -30,7 +30,7 @@ export default function PresentationLanding() {
         <div className="flex items-center gap-6">
           <LanguageThemePill lang={lang} setLang={setLang} />
           <Link href="/login">
-            <Button variant="outline" className="rounded-full px-6 bg-white/60 dark:bg-white/10 border-black/10 dark:border-white/15 hover:bg-white/70 dark:hover:bg-white/15">
+            <Button variant="outline" className="rounded-full px-6 bg-white/60 border-black/10 hover:bg-white/70">
               {t.auth.login}
             </Button>
           </Link>
@@ -71,10 +71,10 @@ function Slide1({ t }: { t: any }) {
       className="h-[100dvh] w-full relative flex items-center justify-center overflow-hidden sticky top-0 z-10 bg-background will-change-transform origin-center"
     >
       <div className="absolute inset-0 z-0">
-        <div className="opacity-35 dark:opacity-100">
+        <div className="opacity-35">
           <MeshGradient />
         </div>
-        <div className="absolute inset-0 bg-white/55 dark:bg-black/30 backdrop-blur-[2px]" />
+        <div className="absolute inset-0 bg-white/55 backdrop-blur-[2px]" />
       </div>
 
       <div className="relative z-10 text-center px-6 max-w-5xl">
@@ -134,7 +134,7 @@ function Slide2({ t }: { t: any }) {
           whileInView={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.8 }}
         >
-          <div className="w-20 h-20 bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-2xl flex items-center justify-center mb-8 shadow-sm backdrop-blur-xl">
+          <div className="w-20 h-20 bg-white/60 border border-black/10 rounded-2xl flex items-center justify-center mb-8 shadow-sm backdrop-blur-xl">
             <Network className="w-10 h-10 text-primary" />
           </div>
           <h2 className="text-5xl md:text-7xl font-semibold tracking-tight mb-6">HUB DUB</h2>
@@ -142,7 +142,7 @@ function Slide2({ t }: { t: any }) {
             {t.landing.trinity.builder.desc}
           </p>
           <Link href="/studios">
-            <Button variant="outline" className="rounded-full px-8 h-12 bg-white/60 dark:bg-white/10 border-black/10 dark:border-white/15 hover:bg-white/70 dark:hover:bg-white/15 vhub-hover-lift">
+            <Button variant="outline" className="rounded-full px-8 h-12 bg-white/60 border-black/10 hover:bg-white/70 vhub-hover-lift">
               Launch Studio <ArrowRight className="w-4 h-4" />
             </Button>
           </Link>
@@ -209,7 +209,7 @@ function Slide3({ t }: { t: any }) {
                 initial={{ opacity: 0, y: 50 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1 }}
-                className="aspect-square bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-3xl p-6 flex flex-col justify-between transition-colors backdrop-blur-xl"
+                className="aspect-square bg-white/60 border border-black/10 rounded-3xl p-6 flex flex-col justify-between transition-colors backdrop-blur-xl"
               >
                 <div className="w-12 h-12 bg-foreground rounded-full flex items-center justify-center text-background">01</div>
                 <span className="font-bold text-xl">VOX</span>
@@ -218,7 +218,7 @@ function Slide3({ t }: { t: any }) {
                 initial={{ opacity: 0, y: 50 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.2 }}
-                className="aspect-square bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-3xl p-6 flex flex-col justify-between mt-12 transition-colors backdrop-blur-xl"
+                className="aspect-square bg-white/60 border border-black/10 rounded-3xl p-6 flex flex-col justify-between mt-12 transition-colors backdrop-blur-xl"
               >
                 <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center text-foreground">02</div>
                 <span className="font-bold text-xl">ADR</span>
@@ -227,7 +227,7 @@ function Slide3({ t }: { t: any }) {
                 initial={{ opacity: 0, y: 50 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="aspect-square bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-3xl p-6 flex flex-col justify-between transition-colors backdrop-blur-xl"
+                className="aspect-square bg-white/60 border border-black/10 rounded-3xl p-6 flex flex-col justify-between transition-colors backdrop-blur-xl"
               >
                 <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center text-foreground">03</div>
                 <span className="font-bold text-xl">Mix</span>
@@ -251,7 +251,7 @@ function Slide3({ t }: { t: any }) {
           whileInView={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.8 }}
         >
-          <div className="w-20 h-20 bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-2xl flex items-center justify-center mb-8 shadow-sm backdrop-blur-xl">
+          <div className="w-20 h-20 bg-white/60 border border-black/10 rounded-2xl flex items-center justify-center mb-8 shadow-sm backdrop-blur-xl">
             <GraduationCap className="w-10 h-10 text-primary" />
           </div>
           <h2 className="text-5xl md:text-7xl font-semibold tracking-tight mb-6">HUBSCHOOL</h2>
@@ -284,7 +284,7 @@ function Slide4({ t }: { t: any }) {
           whileInView={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.8 }}
         >
-          <div className="w-20 h-20 bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/15 rounded-2xl flex items-center justify-center mb-8 shadow-sm backdrop-blur-xl">
+          <div className="w-20 h-20 bg-white/60 border border-black/10 rounded-2xl flex items-center justify-center mb-8 shadow-sm backdrop-blur-xl">
             <AudioWaveform className="w-10 h-10 text-primary" />
           </div>
           <h2 className="text-5xl md:text-7xl font-semibold tracking-tight mb-6">HUB ALIGN</h2>

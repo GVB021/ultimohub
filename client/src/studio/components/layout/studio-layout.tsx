@@ -4,7 +4,6 @@ import { AppSidebar } from "./app-sidebar";
 import { useAuth } from "@studio/hooks/use-auth";
 import { ShieldAlert } from "lucide-react";
 import { Link } from "wouter";
-import { ModeToggle } from "../mode-toggle";
 
 interface StudioLayoutProps {
   studioId: string;
@@ -15,7 +14,7 @@ export function StudioLayout({ studioId, children }: StudioLayoutProps) {
   const { user } = useAuth();
 
   return (
-    <SidebarProvider>
+    <SidebarProvider defaultOpen={false}>
       <div className="flex min-h-screen w-full bg-background text-foreground relative overflow-hidden">
         <div className="fixed inset-0 z-0 pointer-events-none">
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/12 via-background to-background"></div>
@@ -26,12 +25,10 @@ export function StudioLayout({ studioId, children }: StudioLayoutProps) {
         <AppSidebar studioId={studioId} />
         <div className="flex flex-col flex-1 w-full overflow-hidden min-w-0 relative z-10">
           <header className="flex h-16 shrink-0 items-center gap-4 px-6 sticky top-0 z-50 border-b border-border/60 bg-background/70 backdrop-blur-xl supports-[backdrop-filter]:bg-background/50 shadow-sm">
-            <SidebarTrigger className="-ml-2 h-9 w-9 text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors rounded-full" data-testid="button-sidebar-trigger" />
+            <SidebarTrigger className="-ml-2 h-9 w-9 text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors rounded-full md:hidden" data-testid="button-sidebar-trigger" />
             <div className="flex-1" />
             
             <div className="flex items-center gap-2">
-              <ModeToggle />
-              
               {user?.role === "platform_owner" && (
                 <Link href="/hub-dub/admin">
                   <button className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-full border border-border/60 bg-card/60 hover:bg-card" data-testid="button-header-admin">

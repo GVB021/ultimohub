@@ -33,15 +33,15 @@ export default function SecretariaLogin() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950 p-4 relative overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4 relative overflow-hidden">
       {/* Different background style for differentiation */}
       <div className="absolute inset-0 pointer-events-none">
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[500px] bg-blue-500/10 blur-[120px] rounded-full" />
       </div>
 
-      <div className="w-full max-w-sm relative page-enter bg-white dark:bg-zinc-900 p-8 rounded-2xl shadow-xl border border-zinc-200 dark:border-zinc-800">
+      <div className="w-full max-w-sm relative page-enter bg-white p-8 rounded-2xl shadow-xl border border-zinc-200">
         <div className="text-center mb-10">
-          <div className="mx-auto w-16 h-16 flex items-center justify-center mb-6 bg-blue-50 dark:bg-blue-900/20 rounded-2xl">
+          <div className="mx-auto w-16 h-16 flex items-center justify-center mb-6 bg-blue-50 rounded-2xl">
             <img src="/logo.svg" alt="V.HUB" className="w-10 h-10" />
           </div>
           <h1 className="text-2xl font-bold text-foreground mb-2">Secretaria V.HUB</h1>
@@ -59,7 +59,7 @@ export default function SecretariaLogin() {
               placeholder="admin@vhub.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="h-11 bg-zinc-50 dark:bg-zinc-950/50"
+              className="h-11 bg-zinc-50"
               required
             />
           </div>
@@ -74,7 +74,7 @@ export default function SecretariaLogin() {
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="h-11 bg-zinc-50 dark:bg-zinc-950/50"
+              className="h-11 bg-zinc-50"
               required
             />
           </div>

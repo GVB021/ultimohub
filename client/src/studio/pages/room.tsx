@@ -11,7 +11,6 @@ import {
   Pause,
   Square,
   Save,
-  ArrowLeft,
   Circle,
   CheckCircle2,
   Volume2,
@@ -59,7 +58,7 @@ import {
   type RecordingStatus,
   type RecordingResult,
 } from "@studio/lib/audio/recordingEngine";
-import { encodeWav, wavToBlob, getDurationSeconds } from "@studio/lib/audio/wavEncoder";
+import { encodeWav, wavToBlob } from "@studio/lib/audio/wavEncoder";
 import { analyzeTakeQuality, type QualityMetrics } from "@studio/lib/audio/qualityAnalysis";
 
 function DailyMeetPanel({ sessionId }: { sessionId: string }) {
@@ -221,7 +220,7 @@ const SHORTCUT_LABELS: Record<keyof Shortcuts, string> = {
   record: "Gravar",
   stop: "Parar",
   loop: "Alternar Loop",
-  back: "Voltar 2s",
+  back: "Recuar 2s",
   forward: "Avancar 2s",
 };
 
@@ -598,6 +597,9 @@ export default function RecordingRoom() {
   const [isMobile, setIsMobile] = useState(false);
   const [scriptOpen, setScriptOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const logAudioStep = useCallback((step: string, payload?: Record<string, unknown>) => {
+    console.info(`[AudioPipeline][Room] ${step}`, payload || {});
+  }, []);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -929,15 +931,25 @@ export default function RecordingRoom() {
 
   useEffect(() => {
     if (deviceSettingsOpen) return;
+    logAudioStep("microphone-request", {
+      captureMode: deviceSettings.voiceCaptureMode,
+      inputDeviceId: deviceSettings.inputDeviceId || "default",
+      gain: deviceSettings.inputGain,
+    });
     requestMicrophone(deviceSettings.voiceCaptureMode, deviceSettings.inputDeviceId)
       .then((state) => {
         setMicState(state);
         setMicReady(true);
         setGain(state, deviceSettings.inputGain);
+        logAudioStep("microphone-ready", {
+          sampleRate: state.audioContext.sampleRate,
+          captureMode: state.captureMode,
+        });
       })
       .catch((err) => {
         console.error("Mic error:", err);
         setMicReady(false);
+        logAudioStep("microphone-error", { message: String(err?.message || err) });
         toast({ title: "Erro no microfone", description: "Nao foi possivel acessar o audio.", variant: "destructive" });
       });
 
@@ -945,10 +957,11 @@ export default function RecordingRoom() {
       releaseMicrophone();
       setMicReady(false);
     };
-  }, [deviceSettings.inputDeviceId, deviceSettings.voiceCaptureMode, deviceSettings.inputGain, deviceSettingsOpen, toast]);
+  }, [deviceSettings.inputDeviceId, deviceSettings.voiceCaptureMode, deviceSettings.inputGain, deviceSettingsOpen, toast, logAudioStep]);
 
   const startCountdown = useCallback(() => {
     if (recordingStatus !== "idle" || !micState) return;
+    logAudioStep("countdown-started", { initiatorUserId: user?.id });
     emitVideoEvent("countdown-start", { initiatorUserId: user?.id });
     
     let count = 3;
@@ -963,6 +976,7 @@ export default function RecordingRoom() {
         clearInterval(timer);
         setRecordingStatus("recording");
         setCountdownValue(0);
+        logAudioStep("capture-starting", { currentLine });
         startCapture(micState);
         if (videoRef.current) {
           videoRef.current.play().catch(() => {});
@@ -973,11 +987,20 @@ export default function RecordingRoom() {
         if (micState.audioContext) playCountdownBeep(micState.audioContext);
       }
     }, 1000);
-  }, [recordingStatus, emitVideoEvent, user?.id, micState]);
+  }, [recordingStatus, emitVideoEvent, user?.id, micState, logAudioStep, currentLine]);
 
   const handleStopRecording = useCallback(async () => {
     if (recordingStatus !== "recording" || !micState) return;
+    logAudioStep("stop-requested", { captureMode: micState.captureMode });
     const result = await stopCapture(micState);
+    if (!result.samples.length) {
+      toast({ title: "Sem áudio capturado", description: "Nenhum sample foi registrado. Verifique microfone e ganho.", variant: "destructive" });
+      setRecordingStatus("idle");
+      setLastRecording(null);
+      setQualityMetrics(null);
+      logAudioStep("stop-empty-buffer");
+      return;
+    }
     setLastRecording(result);
     setRecordingStatus("recorded");
     if (videoRef.current) {
@@ -988,8 +1011,15 @@ export default function RecordingRoom() {
     if (result) {
       const metrics = analyzeTakeQuality(result.samples);
       setQualityMetrics(metrics);
+      logAudioStep("quality-analyzed", {
+        score: metrics.score,
+        clipping: metrics.clipping,
+        loudness: metrics.loudness,
+        noiseFloor: metrics.noiseFloor,
+        sampleRate: result.sampleRate,
+      });
     }
-  }, [recordingStatus, emitVideoEvent]);
+  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -1054,19 +1084,24 @@ export default function RecordingRoom() {
 
   const handlePreview = useCallback(() => {
     if (!lastRecording || !previewAudioRef.current) return;
+    logAudioStep("preview-started", { sampleCount: lastRecording.samples.length, durationSeconds: lastRecording.durationSeconds });
     const wav = encodeWav(lastRecording.samples);
     const blob = wavToBlob(wav);
     const url = createPreviewUrl(blob);
     previewAudioRef.current.src = url;
     previewAudioRef.current.volume = deviceSettings.monitorVolume;
-    previewAudioRef.current.play();
+    previewAudioRef.current.play().catch((err) => {
+      logAudioStep("preview-error", { message: String(err?.message || err) });
+      toast({ title: "Falha na reprodução", description: "Não foi possível reproduzir o take gravado.", variant: "destructive" });
+    });
     setRecordingStatus("previewing");
     
     previewAudioRef.current.onended = () => {
       setRecordingStatus("recorded");
       revokePreviewUrl(url);
+      logAudioStep("preview-ended");
     };
-  }, [lastRecording, deviceSettings.monitorVolume]);
+  }, [lastRecording, deviceSettings.monitorVolume, logAudioStep, toast]);
 
   const handleDiscard = useCallback(() => {
     setLastRecording(null);
@@ -1075,9 +1110,22 @@ export default function RecordingRoom() {
   }, []);
 
   const handleSaveTake = useCallback(async () => {
-    if (!lastRecording || !recordingProfile || isSaving) return;
+    if (isSaving) return;
+    if (!lastRecording) {
+      toast({ title: "Nenhum take para salvar", description: "Grave um take antes de salvar.", variant: "destructive" });
+      return;
+    }
+    if (!recordingProfile) {
+      setShowProfilePanel(true);
+      toast({ title: "Perfil de gravação pendente", description: "Defina ator e personagem antes de salvar.", variant: "destructive" });
+      return;
+    }
     setIsSaving(true);
     try {
+      logAudioStep("encoding-wav", {
+        sampleCount: lastRecording.samples.length,
+        durationSeconds: lastRecording.durationSeconds,
+      });
       const wav = encodeWav(lastRecording.samples);
       const blob = wavToBlob(wav);
       
@@ -1090,27 +1138,44 @@ export default function RecordingRoom() {
       formData.append("voiceActorId", recordingProfile.voiceActorId);
       formData.append("voiceActorName", recordingProfile.voiceActorName);
       formData.append("isDone", "true");
+      formData.append("sampleRate", String(lastRecording.sampleRate || 48000));
+      if (qualityMetrics?.score !== undefined && qualityMetrics?.score !== null) {
+        formData.append("qualityScore", String(qualityMetrics.score));
+      }
+      if (currentScriptLine) {
+        formData.append("startTimeSeconds", String(currentScriptLine.start));
+        formData.append("timecode", formatTimecode(currentScriptLine.start));
+      }
 
-      await authFetch(`/api/sessions/${sessionId}/takes`, {
+      const savedTake = await authFetch(`/api/sessions/${sessionId}/takes`, {
         method: "POST",
         body: formData,
+      });
+      logAudioStep("save-success", {
+        takeId: savedTake?.id,
+        lineIndex: currentLine,
+        durationSeconds: lastRecording.durationSeconds,
       });
 
       queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
       toast({ title: "Take salvo com sucesso!" });
       handleDiscard();
     } catch (err: any) {
+      logAudioStep("save-error", { message: err.message });
       toast({ title: "Erro ao salvar take", description: err.message, variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
-  }, [lastRecording, recordingProfile, currentLine, sessionId, queryClient, toast, handleDiscard, isSaving]);
+  }, [lastRecording, recordingProfile, currentLine, sessionId, queryClient, toast, handleDiscard, isSaving, qualityMetrics, currentScriptLine, logAudioStep]);
 
   const handleDownloadTake = useCallback(async (take: any) => {
     try {
       const response = await fetch(`/api/takes/${take.id}/stream`, {
-        headers: { "Authorization": `Bearer ${localStorage.getItem("vhub_token")}` }
+        credentials: "include",
       });
+      if (!response.ok) {
+        throw new Error(`Falha no download (${response.status})`);
+      }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -1185,8 +1250,8 @@ export default function RecordingRoom() {
           <p className="text-sm font-medium text-foreground">Erro ao carregar sessao</p>
           <p className="text-xs text-muted-foreground">Verifique se voce tem acesso a este estudio e sessao.</p>
           <Link href={`/hub-dub/studio/${studioId}/sessions`}>
-            <button className="mt-2 vhub-btn-sm vhub-btn-primary" data-testid="button-back-sessions">
-              Voltar para Sessoes
+            <button className="mt-2 vhub-btn-sm vhub-btn-primary" data-testid="button-go-sessions">
+              Ir para Sessoes
             </button>
           </Link>
         </div>
@@ -1296,10 +1361,10 @@ export default function RecordingRoom() {
       )}
 
       {takesPopupOpen && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
-          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[520px] overflow-hidden" style={{ background: "rgba(15,15,30,0.95)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 12px 48px rgba(0,0,0,0.5)" }}>
-            <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-              <span className="text-sm font-semibold" style={{ color: "hsl(210 40% 96%)" }}>Takes da Sessao</span>
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
+          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[520px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
+              <span className="text-sm font-semibold text-foreground">Takes da Sessao</span>
               <button
                 onClick={() => {
                   setTakesPopupOpen(false);
@@ -1309,8 +1374,7 @@ export default function RecordingRoom() {
                   }
                   setTakePreviewId(null);
                 }}
-                className="transition-colors"
-                style={{ color: "rgba(255,255,255,0.40)" }}
+                className="transition-colors text-muted-foreground hover:text-foreground"
                 data-testid="button-close-takes-popup"
               >
                 <X className="w-4 h-4" />
@@ -1320,7 +1384,7 @@ export default function RecordingRoom() {
               <audio ref={takePreviewAudioRef} preload="none" />
               <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
                 {(isPrivileged ? takesList : takesList.filter((t: any) => t.voiceActorId === user?.id || t.userId === user?.id)).map((take: any) => (
-                  <div key={take.id} className="flex items-center gap-3 px-3 py-2 rounded-lg" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <div key={take.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-background/75 border border-border/70">
                     <button
                       onClick={() => {
                         const audio = takePreviewAudioRef.current;
@@ -1332,31 +1396,35 @@ export default function RecordingRoom() {
                           return;
                         }
                         setTakePreviewId(take.id);
+                        audio.volume = deviceSettings.monitorVolume;
                         audio.src = `/api/takes/${take.id}/stream`;
-                        audio.play().catch(() => {});
+                        audio.play().catch((err) => {
+                          logAudioStep("take-preview-error", { takeId: take.id, message: String(err?.message || err) });
+                          toast({ title: "Falha ao reproduzir take", variant: "destructive" });
+                          setTakePreviewId(null);
+                        });
+                        audio.onended = () => setTakePreviewId(null);
                       }}
-                      className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
-                      style={{ background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.75)" }}
+                      className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors bg-muted/60 text-foreground hover:bg-muted"
                       data-testid={`button-play-take-${take.id}`}
                     >
                       {takePreviewId === take.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                     </button>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono tabular-nums" style={{ color: "rgba(255,255,255,0.45)" }}>#{take.lineIndex}</span>
-                        <span className="text-xs font-medium truncate" style={{ color: "rgba(255,255,255,0.80)" }}>{take.characterName || "Take"}</span>
-                        <span className="ml-auto text-xs font-mono" style={{ color: "rgba(255,255,255,0.45)" }}>{take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : ""}</span>
+                        <span className="text-xs font-mono tabular-nums text-muted-foreground">#{take.lineIndex}</span>
+                        <span className="text-xs font-medium truncate text-foreground">{take.characterName || "Take"}</span>
+                        <span className="ml-auto text-xs font-mono text-muted-foreground">{take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : ""}</span>
                       </div>
                       {isPrivileged && (
-                        <div className="text-[10px] truncate mt-0.5" style={{ color: "rgba(255,255,255,0.35)" }}>
+                        <div className="text-[10px] truncate mt-0.5 text-muted-foreground">
                           {take.voiceActorName || take.userName || take.userId || take.voiceActorId}
                         </div>
                       )}
                     </div>
                     <button
                       onClick={() => handleDownloadTake(take)}
-                      className="p-2 rounded-lg transition-colors"
-                      style={{ color: "rgba(255,255,255,0.45)", background: "rgba(255,255,255,0.06)" }}
+                      className="p-2 rounded-lg transition-colors text-muted-foreground bg-muted/60 hover:text-foreground hover:bg-muted"
                       title="Baixar take"
                       data-testid={`button-download-take-popup-${take.id}`}
                     >
@@ -1365,7 +1433,7 @@ export default function RecordingRoom() {
                   </div>
                 ))}
                 {takesList.length === 0 && (
-                  <div className="text-sm text-center py-10" style={{ color: "rgba(255,255,255,0.40)" }}>
+                  <div className="text-sm text-center py-10 text-muted-foreground">
                     Nenhum take gravado nesta sessao
                   </div>
                 )}
@@ -1516,15 +1584,12 @@ export default function RecordingRoom() {
         </div>
       )}
 
-      <header className="shrink-0 flex items-center justify-between px-3 h-12 sm:h-14 relative z-20" style={{ background: "rgba(255,255,255,0.04)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+      <audio ref={previewAudioRef} preload="none" />
+
+      <header className="shrink-0 flex items-center justify-between px-3 h-12 sm:h-14 relative z-20" style={{ background: "hsl(var(--background) / 0.90)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid hsl(var(--border) / 0.9)" }}>
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-          <Link href={`/hub-dub/studio/${studioId}/sessions`}>
-            <button className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/5 text-muted-foreground hover:text-foreground transition-colors" aria-label="Voltar para sessões" data-testid="button-exit-room">
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-          </Link>
           <div className="flex flex-col min-w-0">
-            <span className="font-bold text-xs sm:text-sm truncate" style={{ color: "hsl(210 40% 96%)" }}>{production?.name || "Sessao"}</span>
+            <span className="font-bold text-xs sm:text-sm truncate text-foreground">{production?.name || "Sessao"}</span>
             <span className="text-[10px] text-muted-foreground truncate">{session?.title}</span>
           </div>
         </div>
@@ -1573,8 +1638,8 @@ export default function RecordingRoom() {
       )}>
         <div className="flex flex-col min-h-0 relative">
           <div className="flex-1 flex flex-col min-h-0 bg-black/20">
-            <div className={cn(
-              "flex-1 min-h-[200px] relative overflow-hidden rounded-2xl border border-white/5 bg-black/40",
+          <div className={cn(
+            "flex-1 min-h-[200px] relative overflow-hidden rounded-2xl border border-border/60 bg-background/80",
               isMobile ? "m-0 rounded-none border-none" : "m-2"
             )}>
               {production?.videoUrl ? (
@@ -1644,7 +1709,7 @@ export default function RecordingRoom() {
 
               <button
                 onClick={() => setIsMuted((m) => !m)}
-                className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 text-zinc-400 hover:text-white transition-all hover:bg-black/60"
+                className="absolute top-3 right-3 p-2 rounded-xl bg-background/80 text-muted-foreground hover:text-foreground transition-all hover:bg-background"
                 aria-label={isMuted ? "Ativar som" : "Desativar som"}
                 data-testid="button-mute"
               >
@@ -1653,10 +1718,10 @@ export default function RecordingRoom() {
             </div>
 
             {videoDuration > 0 && (
-              <div className="px-3 sm:px-5 py-2" style={{ background: "rgba(255,255,255,0.03)", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                <div className="flex items-center gap-3 text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.45)" }}>
+              <div className="px-3 sm:px-5 py-2 bg-muted/30 border-t border-border/70">
+                <div className="flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
                   <span>{formatTimecode(videoTime)}</span>
-                  <div className="flex-1 relative h-1.5 rounded-full cursor-pointer group" style={{ background: "rgba(255,255,255,0.10)" }} onClick={(e) => {
+                  <div className="flex-1 relative h-1.5 rounded-full cursor-pointer group bg-border/60" onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
                     scrub((e.clientX - rect.left) / rect.width);
                   }}>
@@ -1685,7 +1750,7 @@ export default function RecordingRoom() {
               </div>
             )}
 
-            <div className="shrink-0 px-3 sm:px-5 py-4 sm:py-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4 sm:gap-0 bg-white/[0.03] backdrop-blur-xl border-t border-white/[0.06]">
+            <div className="shrink-0 px-3 sm:px-5 py-4 sm:py-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4 sm:gap-0 bg-card/70 backdrop-blur-xl border-t border-border/70">
               <div className="hidden sm:flex w-56 shrink-0 flex-col justify-center gap-1 py-3">
                 <div className="flex items-center justify-between text-[10px] mb-0.5" style={{ color: "rgba(255,255,255,0.45)" }}>
                   <span className="uppercase tracking-wider">
@@ -1727,8 +1792,8 @@ export default function RecordingRoom() {
                 <div className="flex items-center gap-2 sm:gap-3">
                   <button
                     onClick={() => seek(-2)}
-                    className="w-11 h-11 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center transition-all bg-white/[0.05] text-white/40 hover:text-white"
-                    aria-label="Voltar 2 segundos"
+                    className="w-11 h-11 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center transition-all bg-muted/60 text-muted-foreground hover:text-foreground"
+                    aria-label="Recuar 2 segundos"
                     data-testid="button-back-2s"
                   >
                     <RotateCcw className="w-5 h-5" />
@@ -1736,7 +1801,7 @@ export default function RecordingRoom() {
 
                   <button
                     onClick={handlePlayPause}
-                    className="w-12 h-12 sm:w-11 sm:h-11 rounded-full flex items-center justify-center transition-all bg-white/[0.1] text-white shadow-lg"
+                    className="w-12 h-12 sm:w-11 sm:h-11 rounded-full flex items-center justify-center transition-all bg-primary text-primary-foreground shadow-lg"
                     aria-label={isPlaying ? "Pausar" : "Reproduzir"}
                     data-testid="button-play-pause"
                   >
@@ -1745,7 +1810,7 @@ export default function RecordingRoom() {
 
                   <button
                     onClick={recordingStatus === "recording" ? handleStopRecording : handleStopPlayback}
-                    className="w-11 h-11 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center transition-all bg-white/[0.05] text-white/40 hover:text-white"
+                    className="w-11 h-11 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center transition-all bg-muted/60 text-muted-foreground hover:text-foreground"
                     aria-label="Parar"
                     data-testid="button-stop"
                   >
@@ -1753,7 +1818,7 @@ export default function RecordingRoom() {
                   </button>
                 </div>
 
-                <div className="w-px h-8 bg-white/[0.1]" />
+                <div className="w-px h-8 bg-border/80" />
 
                 {recordingStatus === "idle" || recordingStatus === "countdown" ? (
                   <button
@@ -1783,7 +1848,7 @@ export default function RecordingRoom() {
                       onClick={handlePreview}
                       className={cn(
                         "w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all",
-                        recordingStatus === "previewing" ? "bg-primary text-white shadow-[0_0_16px_rgba(245,158,11,0.3)]" : "bg-white/[0.08] border border-white/[0.15] text-white/70"
+                        recordingStatus === "previewing" ? "bg-primary text-primary-foreground shadow-[0_0_16px_rgba(245,158,11,0.3)]" : "bg-muted/60 border border-border/70 text-foreground"
                       )}
                       aria-label="Ouvir take"
                       data-testid="button-preview"
@@ -1815,7 +1880,7 @@ export default function RecordingRoom() {
                     <div className="w-px h-8 bg-white/[0.1]" />
                     <button
                       onClick={() => seek(2)}
-                      className="w-10 h-10 rounded-xl flex items-center justify-center transition-all bg-white/[0.05] text-white/40 hover:text-white"
+                      className="w-10 h-10 rounded-xl flex items-center justify-center transition-all bg-muted/60 text-muted-foreground hover:text-foreground"
                       aria-label="Avançar 2 segundos"
                       data-testid="button-forward-2s"
                     >
@@ -1837,7 +1902,7 @@ export default function RecordingRoom() {
                       }}
                       className={cn(
                         "w-10 h-10 rounded-xl flex items-center justify-center transition-all",
-                        isLooping || loopSelectionMode !== "idle" ? "bg-primary/20 text-primary border border-primary/30" : "bg-white/[0.05] text-white/40"
+                        isLooping || loopSelectionMode !== "idle" ? "bg-primary/20 text-primary border border-primary/30" : "bg-muted/60 text-muted-foreground"
                       )}
                       aria-label="Alternar loop"
                       data-testid="button-loop"
@@ -1900,9 +1965,9 @@ export default function RecordingRoom() {
         </div>
 
         {!isMobile && (
-          <div className="flex flex-col min-h-0 bg-white/[0.02]">
-            <div className="h-11 shrink-0 px-5 flex items-center justify-between" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)" }}>
-              <span className="text-[11px] font-semibold uppercase tracking-widest text-white/40">
+          <div className="flex flex-col min-h-0 bg-card/40">
+            <div className="h-11 shrink-0 px-5 flex items-center justify-between border-b border-border/70 bg-muted/30">
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                 Roteiro
               </span>
               <div className="flex items-center gap-2">
@@ -1911,14 +1976,14 @@ export default function RecordingRoom() {
                   onClick={() => { setScriptAutoFollow(true); scrollScriptToLine(currentLine, "smooth"); }}
                   className={cn(
                     "text-[10px] px-2 py-1 rounded-full transition-colors border",
-                    scriptAutoFollow ? "bg-primary/15 text-primary border-primary/25" : "bg-white/5 text-white/55 border-white/10"
+                    scriptAutoFollow ? "bg-primary/15 text-primary border-primary/25" : "bg-muted/60 text-muted-foreground border-border/70"
                   )}
                   data-testid="button-script-follow"
                 >
                   {scriptAutoFollow ? "AUTO" : "SEGUIR"}
                 </button>
-                <span className="text-xs text-white/40">
-                  <span className="font-mono text-white/75">{currentLine + 1}</span>
+                <span className="text-xs text-muted-foreground">
+                  <span className="font-mono text-foreground">{currentLine + 1}</span>
                   {" "}/{" "}
                   {scriptLines.length}
                 </span>
@@ -1943,20 +2008,20 @@ export default function RecordingRoom() {
                     onClick={canTextControl ? (() => handleLineClick(i)) : undefined}
                     className={cn(
                       "mb-3 px-5 py-4 rounded-xl transition-all duration-300 relative overflow-hidden",
-                      isActive ? "bg-white/[0.035] shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.16)] backdrop-blur-md" : (isInLoop ? "bg-primary/5 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.16)]" : "bg-transparent"),
+                      isActive ? "bg-background/85 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.22)] backdrop-blur-md" : (isInLoop ? "bg-primary/5 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.16)]" : "bg-transparent"),
                       canTextControl ? "cursor-pointer" : "cursor-default"
                     )}
                     data-testid={`script-line-${i}`}
                   >
                     {isInLoop && <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500/40" />}
                     <div className="flex items-center gap-3 mb-2">
-                      <span className="text-[16px] font-mono tabular-nums text-white/20">{formatTimecode(line.start)}</span>
-                      <span className={cn("text-[24px] font-extrabold uppercase tracking-tight", isActive ? "text-primary" : "text-white/25")}>
+                      <span className="text-[16px] font-mono tabular-nums text-muted-foreground">{formatTimecode(line.start)}</span>
+                      <span className={cn("text-[24px] font-extrabold uppercase tracking-tight", isActive ? "text-primary" : "text-muted-foreground")}>
                         {line.character}
                       </span>
                       {isDone && <CheckCircle2 className="ml-auto w-5 h-5 text-emerald-500" />}
                     </div>
-                    <p className={cn("text-[22px] leading-relaxed", isActive ? "text-white font-medium" : "text-white/30")}>
+                    <p className={cn("text-[22px] leading-relaxed", isActive ? "text-foreground font-medium" : "text-muted-foreground")}>
                       {lineEdits[i] ?? line.text}
                     </p>
                   </div>

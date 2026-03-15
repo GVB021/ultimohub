@@ -13,6 +13,32 @@ export function useStudios() {
   });
 }
 
+export function useStudioAutoEntry() {
+  return useQuery({
+    queryKey: [api.studios.autoEntry.path],
+    retry: false,
+    queryFn: async () => {
+      const res = await fetch(api.studios.autoEntry.path, { credentials: "include" });
+      if (res.status === 404) {
+        return { mode: "select", count: 0 } as const;
+      }
+      if (res.status === 401) {
+        throw new Error("Unauthorized");
+      }
+      if (!res.ok) {
+        let message = res.statusText || "Erro ao validar auto-redirecionamento";
+        try {
+          const body = await res.json();
+          if (body?.message) message = body.message;
+        } catch {}
+        throw new Error(message);
+      }
+      const body = await res.json();
+      return api.studios.autoEntry.responses[200].parse(body);
+    },
+  });
+}
+
 export function useStudio(id: string) {
   const { data: studios } = useStudios();
   return studios?.find(s => s.id === id);

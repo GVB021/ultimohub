@@ -33,6 +33,7 @@ import {
   parseSupabaseStorageUrl,
   uploadToSupabaseStorage,
 } from "./lib/supabase";
+import { decideStudioAutoEntry } from "./lib/studio-auto-entry";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -369,6 +370,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       })
     );
     res.status(200).json(studiosWithRoles);
+  });
+
+  app.get("/api/studios/auto-entry", requireAuth, async (req, res) => {
+    const user = (req as any).user!;
+    const baseStudios = normalizePlatformRole(user.role) === "platform_owner"
+      ? await storage.getStudios()
+      : await storage.getStudiosForUser(user.id);
+
+    const decision = decideStudioAutoEntry(baseStudios);
+    if (decision.mode === "error") {
+      return res.status(404).json({ message: decision.message });
+    }
+
+    if (decision.mode === "redirect") {
+      const studio = await storage.getStudio(decision.studioId);
+      if (!studio) {
+        return res.status(404).json({ message: "Estudio nao encontrado para redirecionamento automatico" });
+      }
+      return res.status(200).json({
+        mode: "redirect",
+        studioId: decision.studioId,
+        target: `/hub-dub/studio/${decision.studioId}/dashboard`,
+        count: 1,
+      });
+    }
+
+    return res.status(200).json({
+      mode: "select",
+      count: baseStudios.length,
+    });
   });
 
   app.get("/api/studios/:studioId", requireAuth, requireStudioAccess, async (req, res) => {
@@ -811,6 +842,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/sessions/:sessionId/takes", requireAuth, upload.single("audio"), async (req, res) => {
     try {
       const sessionId = req.params.sessionId;
+      logger.info("[Take Upload] Request received", {
+        sessionId,
+        hasFile: Boolean(req.file),
+        mimeType: req.file?.mimetype || null,
+        fileSize: req.file?.size || 0,
+      });
       const body = z.object({
         characterId: z.string().min(1),
         voiceActorId: z.string().min(1),
@@ -842,6 +879,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         fs.writeFileSync(filePath, req.file.buffer);
         audioUrl = `/uploads/${filename}`;
         contentType = req.file.mimetype || contentType;
+        logger.info("[Take Upload] File buffered locally", {
+          sessionId,
+          filename,
+          contentType,
+          fileSize: req.file.size,
+        });
       }
 
       if (!audioUrl) {
@@ -858,6 +901,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         qualityScore: body.qualityScore ?? null,
       });
       const take = await storage.createTake(takeInput);
+      logger.info("[Take Upload] DB row created", {
+        takeId: take.id,
+        sessionId,
+        lineIndex: take.lineIndex,
+        voiceActorId: take.voiceActorId,
+        durationSeconds: take.durationSeconds,
+      });
 
       if (req.file && storageProvider === "supabase" && isSupabaseConfigured()) {
         try {
@@ -914,11 +964,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           });
           await storage.updateTakeAudioUrl(take.id, publicUrl);
           (take as any).audioUrl = publicUrl;
+          logger.info("[Take Upload] Supabase sync complete", {
+            takeId: take.id,
+            objectPath,
+            bucket: supabaseBucket,
+          });
         } catch (e: any) {
           logger.error("[Take Upload] Supabase upload failed", { takeId: take.id, message: e?.message });
         }
       }
 
+      logger.info("[Take Upload] Completed", { takeId: take.id, sessionId });
       res.status(201).json(take);
     } catch (err: any) {
       logger.error("[Take Upload] Create error", { message: err?.message });

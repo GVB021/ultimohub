@@ -1,14 +1,15 @@
-import { Switch, Route, Redirect, Router as WouterRouter, useSearch } from "wouter";
+import { Switch, Route, Redirect, Router as WouterRouter } from "wouter";
 import { memoryHook, memorySearchHook } from "@studio/lib/memory-router";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@studio/components/ui/toaster";
 import { TooltipProvider } from "@studio/components/ui/tooltip";
 import { useAuth } from "@studio/hooks/use-auth";
-import { useStudios } from "@studio/hooks/use-studios";
+import { useStudioAutoEntry } from "@studio/hooks/use-studios";
 import { Loader2 } from "lucide-react";
 import { lazy, Suspense } from "react";
 import { ErrorBoundary } from "@studio/components/ui/error-boundary";
+import { resolveStudioAutoEntryTarget } from "@studio/lib/studio-auto-entry";
 
 const NotFound = lazy(() => import("@studio/pages/not-found"));
 const Landing = lazy(() => import("@studio/pages/landing"));
@@ -21,12 +22,11 @@ const Sessions = lazy(() => import("@studio/pages/sessions"));
 const RecordingRoom = lazy(() => import("@studio/pages/room").then(module => ({ default: module.default })));
 const Staff = lazy(() => import("@studio/pages/staff"));
 const Admin = lazy(() => import("@studio/pages/admin"));
-const Notifications = lazy(() => import("@studio/pages/notifications"));
 const Members = lazy(() => import("@studio/pages/members"));
 const StudioAdmin = lazy(() => import("@studio/pages/studio-admin"));
 const Takes = lazy(() => import("@studio/pages/takes"));
 const Profile = lazy(() => import("@studio/pages/profile"));
-const Daw = lazy(() => import("@studio/pages/daw"));
+const TutorialAudio = lazy(() => import("@studio/pages/tutorial-audio"));
 
 import { StudioLayout } from "@studio/components/layout/studio-layout";
 
@@ -65,8 +65,9 @@ function ProtectedRoute({ component: Component, requireStudio = false, ...rest }
 
 function StudioSelectRoute() {
   const { user, isLoading } = useAuth();
+  const { data: autoEntry, isLoading: isAutoEntryLoading } = useStudioAutoEntry();
 
-  if (isLoading) {
+  if (isLoading || isAutoEntryLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -76,6 +77,11 @@ function StudioSelectRoute() {
 
   if (!user) {
     return <Redirect to="/hub-dub/login" replace />;
+  }
+
+  const autoTarget = resolveStudioAutoEntryTarget(autoEntry);
+  if (autoTarget) {
+    return <Redirect to={autoTarget} replace />;
   }
 
   return <StudioSelect />;
@@ -99,41 +105,6 @@ function LandingRoute() {
   return <Login />;
 }
 
-function DawRoute() {
-  const { user, isLoading: isAuthLoading } = useAuth();
-  const { data: studios, isLoading: isStudiosLoading } = useStudios();
-  const search = useSearch();
-
-  if (isAuthLoading || isStudiosLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Redirect to="/hub-dub/login" replace />;
-  }
-
-  const searchParams = new URLSearchParams(search || "");
-  const studioIdFromQuery = searchParams.get("studioId");
-  const availableStudios = studios || [];
-  const resolvedStudioId = availableStudios.find((studio) => studio.id === studioIdFromQuery)?.id || availableStudios[0]?.id;
-
-  if (!resolvedStudioId) {
-    return <Redirect to="/hub-dub/studios" replace />;
-  }
-
-  return (
-    <StudioLayout studioId={resolvedStudioId}>
-      <ErrorBoundary>
-        <Daw studioId={resolvedStudioId} />
-      </ErrorBoundary>
-    </StudioLayout>
-  );
-}
-
 function Router() {
   return (
     <Suspense fallback={
@@ -155,7 +126,7 @@ function Router() {
           {() => <ProtectedRoute component={Profile} />}
         </Route>
         <Route path="/hub-dub/daw">
-          {() => <DawRoute />}
+          <Redirect to="/hub-dub/studios" replace />
         </Route>
 
         <Route path="/hub-dub/studio/:studioId/dashboard">
@@ -174,10 +145,13 @@ function Router() {
           {params => <ProtectedRoute component={Members} requireStudio params={params} />}
         </Route>
         <Route path="/hub-dub/studio/:studioId/notifications">
-          {params => <ProtectedRoute component={Notifications} requireStudio params={params} />}
+          {params => <Redirect to={`/hub-dub/studio/${params.studioId}/dashboard`} replace />}
         </Route>
         <Route path="/hub-dub/studio/:studioId/takes">
           {params => <ProtectedRoute component={Takes} requireStudio params={params} />}
+        </Route>
+        <Route path="/hub-dub/studio/:studioId/tutorial-audio">
+          {params => <ProtectedRoute component={TutorialAudio} requireStudio params={params} />}
         </Route>
         <Route path="/hub-dub/studio/:studioId/admin">
           {params => <ProtectedRoute component={StudioAdmin} requireStudio params={params} />}

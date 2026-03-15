@@ -109,7 +109,7 @@ export default function HubSchool() {
         </section>
 
         {/* Content Section */}
-        <section id="courses-section" ref={coursesRef} className="relative z-20 py-24 px-6 bg-[#f5f5f7] dark:bg-muted/10 border-t border-border/10">
+        <section id="courses-section" ref={coursesRef} className="relative z-20 py-24 px-6 bg-[#f5f5f7] border-t border-border/10">
            <div className="max-w-[1400px] mx-auto space-y-20">
               
               {/* Popular Courses */}

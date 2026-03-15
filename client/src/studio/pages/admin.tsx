@@ -1619,7 +1619,7 @@ export default function Admin() {
         <ShieldAlert className="w-12 h-12 text-destructive" />
         <h2 className="text-xl font-bold">Acesso Negado</h2>
         <p className="text-muted-foreground text-sm">Apenas proprietarios da plataforma podem acessar este painel.</p>
-        <Button onClick={() => setLocation("/studios")} variant="outline">Voltar aos Estudios</Button>
+        <Button onClick={() => setLocation("/hub-dub/studios")} variant="outline">Ir para Estudios</Button>
       </div>
     );
   }

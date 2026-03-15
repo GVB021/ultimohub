@@ -1,10 +1,7 @@
 import { createRoot } from "react-dom/client";
-import { ThemeProvider } from "@studio/components/theme-provider";
 import App from "./App";
 import "./index.css";
 
 createRoot(document.getElementById("root")!).render(
-  <ThemeProvider defaultTheme="light" storageKey="vhub-theme">
-    <App />
-  </ThemeProvider>
+  <App />
 );

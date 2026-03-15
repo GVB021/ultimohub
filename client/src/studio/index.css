@@ -59,53 +59,15 @@
     --glass-border: rgba(17, 17, 17, 0.1);
   }
 
-  .dark {
-    --background: 224 22% 7%;
-    --foreground: 220 24% 95%;
-
-    --card: 224 20% 10%;
-    --card-foreground: 220 20% 95%;
-    --card-border: 223 16% 20%;
-
-    --popover: 224 20% 10%;
-    --popover-foreground: 220 20% 95%;
-    --popover-border: 223 16% 20%;
-
-    --primary: 221 83% 53%;
-    --primary-foreground: 224 24% 10%;
-    --primary-border: 221 83% 53%;
-
-    --secondary: 223 17% 16%;
-    --secondary-foreground: 220 20% 92%;
-    --secondary-border: 223 14% 21%;
-
-    --muted: 223 17% 16%;
-    --muted-foreground: 219 12% 66%;
-    --muted-border: 223 14% 21%;
-
-    --accent: 223 17% 16%;
-    --accent-foreground: 220 20% 92%;
-    --accent-border: 223 14% 21%;
-
-    --destructive: 0 64% 46%;
-    --destructive-foreground: 0 0% 100%;
-    --destructive-border: 0 64% 46%;
-
-    --border: 223 14% 21%;
-    --input: 223 14% 21%;
-    --ring: 221 83% 53%;
-
-    --radius: 0.75rem;
-  }
 }
 
 @layer utilities {
   .glass-panel {
-    @apply bg-background/70 backdrop-blur-xl border border-border/60 shadow-sm dark:bg-white/[0.05] dark:border-white/[0.12];
+    @apply bg-background/70 backdrop-blur-xl border border-border/60 shadow-sm;
   }
 
   .glass-card {
-    @apply bg-card/80 backdrop-blur-md border border-border/60 shadow-sm transition-all duration-300 hover:border-primary/25 hover:shadow-md dark:bg-white/[0.04] dark:border-white/[0.12];
+    @apply bg-card/80 backdrop-blur-md border border-border/60 shadow-sm transition-all duration-300 hover:border-primary/25 hover:shadow-md;
   }
 
   .text-glow {
@@ -166,6 +128,12 @@
     background-attachment: fixed;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: light;
+    }
   }
 }
 

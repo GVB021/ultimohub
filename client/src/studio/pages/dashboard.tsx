@@ -2,30 +2,24 @@ import { memo, useState } from "react";
 import { useProductions } from "@studio/hooks/use-productions";
 import { useSessions } from "@studio/hooks/use-sessions";
 import { useStudio } from "@studio/hooks/use-studios";
-import { useStaff } from "@studio/hooks/use-staff";
 import { useStudioRole } from "@studio/hooks/use-studio-role";
-import { DashboardCard } from "@studio/components/dashboard/dashboard-card";
-import { ProductionCard } from "@studio/components/dashboard/production-card";
 import { SessionCard } from "@studio/components/dashboard/session-card";
-import {
-  PageSection, PageHeader, StatCard
-} from "@studio/components/ui/design-system";
+import { PageSection } from "@studio/components/ui/design-system";
 import { Button } from "@studio/components/ui/button";
-import { Film, Calendar, Users, Activity, Plus, Clock, UserPlus, ArrowRight, History, PlayCircle, ToggleRight, ToggleLeft } from "lucide-react";
+import { Film, Calendar, Plus, Clock, PlayCircle, Mic, SlidersHorizontal, Waves, Wind, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { pt } from "@studio/lib/i18n";
 import { isSessionVisibleOnDashboard } from "@studio/lib/session-status";
-import { cn } from "@studio/lib/utils";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/dist/style.css";
 import { ptBR } from "date-fns/locale";
+import { ProductionBackgroundVideo } from "@studio/components/dashboard/production-background-video";
 
 const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
   const studio = useStudio(studioId);
   const { data: productions } = useProductions(studioId);
   const { data: sessions } = useSessions(studioId);
-  const { canCreateProductions, canCreateSessions, canManageMembers } = useStudioRole(studioId);
-  const [animationsEnabled, setAnimationsEnabled] = useState(true);
+  const { canCreateProductions, canCreateSessions } = useStudioRole(studioId);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
 
   const upcomingSessions = (sessions || []).filter(s =>
@@ -45,20 +39,43 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
     ? productions?.find(p => p.id === currentOrNextSession.productionId)
     : null;
 
-  const recentProductions = productions?.slice(0, 5) || [];
-  const recentSessions = sessions?.filter(s => new Date(s.scheduledAt) < now).slice(0, 5) || [];
-
   const sessionsOnSelectedDate = upcomingSessions.filter(s => 
     selectedDate && new Date(s.scheduledAt).toDateString() === selectedDate.toDateString()
   );
 
+  const tutorialSteps = [
+    {
+      id: "mic-env",
+      title: "Microfone e ambiente",
+      description: "Use ambiente silencioso, microfone em suporte estável e tratamento acústico básico.",
+      icon: Mic,
+    },
+    {
+      id: "gain-level",
+      title: "Ganho e nível",
+      description: "Ajuste o ganho para picos entre -12 dB e -6 dB, evitando clipping.",
+      icon: SlidersHorizontal,
+    },
+    {
+      id: "position",
+      title: "Posicionamento",
+      description: "Fique entre 12 e 20 cm do microfone com pop filter e ângulo leve lateral.",
+      icon: Waves,
+    },
+    {
+      id: "breath-diction",
+      title: "Respiração e dicção",
+      description: "Respire fora da frase, articule consoantes e mantenha ritmo natural.",
+      icon: Wind,
+    },
+  ];
+
   return (
-    <PageSection className={cn("max-w-[1600px] mx-auto", animationsEnabled ? "animate-in fade-in duration-700" : "")}>
+    <PageSection className="max-w-[1600px] mx-auto animate-in fade-in duration-700">
       <div className="flex flex-col gap-8">
-        {/* Header with Animation Toggle */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">
               {studio?.name || pt.dashboard.title}
             </h1>
             <p className="text-muted-foreground text-sm font-medium">
@@ -66,55 +83,37 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
             </p>
           </div>
           
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setAnimationsEnabled(!animationsEnabled)}
-              className="flex items-center gap-2 text-xs text-muted-foreground hover:text-white transition-colors"
-            >
-              {animationsEnabled ? <ToggleRight className="w-5 h-5 text-primary" /> : <ToggleLeft className="w-5 h-5" />}
-              {animationsEnabled ? "Animações ON" : "Animações OFF"}
-            </button>
-
-            <div className="flex gap-2">
-              {canCreateProductions && (
-                <Button size="sm" className="gap-1.5 vhub-btn-sm vhub-btn-primary shadow-lg shadow-primary/20" asChild>
-                  <Link href={`/hub-dub/studio/${studioId}/productions`}>
-                    <Plus className="h-3.5 w-3.5" /> {pt.dashboard.production}
-                  </Link>
-                </Button>
-              )}
-              {canCreateSessions && (
-                <Button size="sm" variant="outline" className="gap-1.5 border-white/10 hover:bg-white/5" asChild>
-                  <Link href={`/hub-dub/studio/${studioId}/sessions`}>
-                    <Clock className="h-3.5 w-3.5" /> {pt.dashboard.session}
-                  </Link>
-                </Button>
-              )}
-            </div>
+          <div className="flex gap-2">
+            {canCreateProductions && (
+              <Button size="sm" className="gap-1.5 vhub-btn-sm vhub-btn-primary shadow-lg shadow-primary/20" asChild>
+                <Link href={`/hub-dub/studio/${studioId}/productions`}>
+                  <Plus className="h-3.5 w-3.5" /> {pt.dashboard.production}
+                </Link>
+              </Button>
+            )}
+            {canCreateSessions && (
+              <Button size="sm" variant="outline" className="gap-1.5 border-border/70 hover:bg-muted/60" asChild>
+                <Link href={`/hub-dub/studio/${studioId}/sessions`}>
+                  <Clock className="h-3.5 w-3.5" /> {pt.dashboard.session}
+                </Link>
+              </Button>
+            )}
           </div>
         </div>
 
-        {/* Hero Section: Current/Next Activity */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Featured Production Card (Poster Style) */}
-          <div className={cn(
-            "relative overflow-hidden rounded-2xl border border-white/10 bg-black aspect-[16/9] lg:aspect-auto flex flex-col justify-end",
-            animationsEnabled && "transition-all duration-300 hover:border-primary/30 hover:shadow-2xl hover:shadow-primary/10 group"
-          )}>
-            {/* @ts-ignore */}
-            {currentProduction?.posterUrl ? (
-              <div 
-                className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105"
-                /* @ts-ignore */
-                style={{ backgroundImage: `url(${currentProduction.posterUrl})` }}
-              />
-            ) : (
-              <div className="absolute inset-0 bg-gradient-to-br from-neutral-900 to-neutral-800 flex items-center justify-center">
-                <Film className="w-24 h-24 text-white/5" />
+          <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card aspect-[16/9] lg:aspect-auto flex flex-col justify-end transition-all duration-300 hover:border-primary/30 hover:shadow-2xl hover:shadow-primary/10 group">
+            <ProductionBackgroundVideo
+              videoUrl={currentProduction?.videoUrl}
+              posterUrl={null}
+            />
+            {!currentProduction?.videoUrl && (
+              <div className="absolute inset-0 bg-gradient-to-br from-muted to-card flex items-center justify-center">
+                <Film className="w-24 h-24 text-muted-foreground/20" />
               </div>
             )}
             
-            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-background/95 via-background/60 to-transparent" />
             
             <div className="relative z-10 p-8 space-y-4">
               <div className="flex items-center gap-2">
@@ -126,32 +125,32 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
               <div className="space-y-1">
                 {currentProduction ? (
                   <>
-                    <h2 className="text-3xl md:text-4xl font-bold text-white leading-tight shadow-black drop-shadow-lg">
+                    <h2 className="text-3xl md:text-4xl font-bold text-foreground leading-tight">
                       {currentProduction.name}
                     </h2>
                     {currentOrNextSession && (
-                      <p className="text-white/80 text-lg font-medium drop-shadow-md">
+                      <p className="text-muted-foreground text-lg font-medium">
                         {currentOrNextSession.title}
                       </p>
                     )}
                   </>
                 ) : (
                   <>
-                    <h2 className="text-3xl font-bold text-white">Sem produção ativa</h2>
-                    <p className="text-white/60">Nenhuma sessão agendada para hoje.</p>
+                    <h2 className="text-3xl font-bold text-foreground">Sem produção ativa</h2>
+                    <p className="text-muted-foreground">Nenhuma sessão agendada para hoje.</p>
                   </>
                 )}
               </div>
 
               {currentOrNextSession && (
                 <div className="flex flex-wrap items-center gap-3 pt-2">
-                  <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 text-white shadow-lg">
+                  <div className="flex items-center gap-2 bg-background/80 backdrop-blur-md px-4 py-2 rounded-lg border border-border/70 text-foreground shadow-sm">
                     <Clock className="w-4 h-4 text-primary" />
                     <span className="font-medium">
                       {new Date(currentOrNextSession.scheduledAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 text-white shadow-lg">
+                  <div className="flex items-center gap-2 bg-background/80 backdrop-blur-md px-4 py-2 rounded-lg border border-border/70 text-foreground shadow-sm">
                     <Calendar className="w-4 h-4 text-primary" />
                     <span className="font-medium">
                       {new Date(currentOrNextSession.scheduledAt).toLocaleDateString('pt-BR')}
@@ -162,11 +161,7 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
             </div>
           </div>
 
-          {/* Calendar & Sessions */}
-          <div className={cn(
-            "relative overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-6 flex flex-col md:flex-row gap-6",
-            animationsEnabled && "transition-all duration-300 hover:border-white/20"
-          )}>
+          <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card/70 p-6 flex flex-col md:flex-row gap-6 transition-all duration-300 hover:border-border">
             <div className="flex-shrink-0 mx-auto md:mx-0">
               <DayPicker
                 mode="single"
@@ -181,23 +176,20 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
                   hasSession: { fontWeight: 'bold', color: 'hsl(var(--primary))', textDecoration: 'underline' }
                 }}
                 styles={{
-                  caption: { color: 'white' },
-                  head_cell: { color: 'rgba(255,255,255,0.5)' },
-                  day: { color: 'white' },
-                  nav_button: { color: 'white' },
+                  caption: { color: 'hsl(var(--foreground))' },
+                  head_cell: { color: 'hsl(var(--muted-foreground))' },
+                  day: { color: 'hsl(var(--foreground))' },
+                  nav_button: { color: 'hsl(var(--foreground))' },
                 }}
               />
             </div>
 
             <div className="flex-1 flex flex-col min-w-0">
-              <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-2">
-                <h3 className="text-lg font-semibold flex items-center gap-2 text-white">
+              <div className="flex items-center justify-between mb-4 border-b border-border/70 pb-2">
+                <h3 className="text-lg font-semibold flex items-center gap-2 text-foreground">
                   <PlayCircle className="w-5 h-5 text-primary" />
                   Sessões
                 </h3>
-                <Link href={`/hub-dub/studio/${studioId}/sessions`} className="text-xs text-primary hover:underline">
-                  Ver agenda completa
-                </Link>
               </div>
 
               <div className="space-y-3 flex-1 overflow-y-auto pr-2 custom-scrollbar max-h-[300px]">
@@ -206,7 +198,7 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
                     <SessionCard key={session.id} session={session} studioId={studioId} />
                   ))
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-center py-8 text-white/40">
+                  <div className="flex flex-col items-center justify-center h-full text-center py-8 text-muted-foreground">
                     <Calendar className="w-10 h-10 mb-2 opacity-20" />
                     <p className="text-sm">Nenhuma sessão para este dia</p>
                   </div>
@@ -216,84 +208,41 @@ const Dashboard = memo(function Dashboard({ studioId }: { studioId: string }) {
           </div>
         </div>
 
-        {/* History Section */}
         <div className="space-y-4">
-          <div className="flex items-center gap-2 text-white/80 border-b border-white/10 pb-4">
-            <History className="w-5 h-5 text-primary" />
-            <h2 className="text-lg font-semibold">Histórico Recente</h2>
+          <div className="flex items-center gap-2 text-foreground border-b border-border/70 pb-4">
+            <Mic className="w-5 h-5 text-primary" />
+            <h2 className="text-lg font-semibold">Mini Tutorial de Captação</h2>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Recent Productions (Non-clickable) */}
-            <div className="space-y-4">
-              <h3 className="text-sm font-medium text-white/60 uppercase tracking-wider">Últimas Produções</h3>
-              <div className="space-y-2">
-                {recentProductions.length > 0 ? (
-                  recentProductions.map(prod => (
-                    <div 
-                      key={prod.id} 
-                      className={cn(
-                        "flex items-center gap-4 p-4 rounded-xl border border-white/5 bg-white/[0.02]",
-                        animationsEnabled && "transition-all hover:bg-white/[0.04]"
-                      )}
-                    >
-                      <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <Film className="h-5 w-5 text-primary" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium text-white truncate">{prod.name}</p>
-                        <p className="text-xs text-white/40 truncate">
-                          Produção
-                        </p>
-                      </div>
-                      <div className="shrink-0">
-                        <span className={cn(
-                          "px-2 py-1 rounded-md text-[10px] font-medium border",
-                          prod.status === 'active' ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : 
-                          prod.status === 'completed' ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
-                          "bg-white/5 text-white/40 border-white/10"
-                        )}>
-                          {prod.status === 'active' ? 'Ativo' : prod.status === 'completed' ? 'Concluído' : 'Arquivado'}
-                        </span>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-white/40 italic">Nenhuma produção recente.</p>
-                )}
-              </div>
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {tutorialSteps.map((step, index) => {
+              const Icon = step.icon;
+              return (
+                <article
+                  key={step.id}
+                  className="rounded-xl border border-border/70 bg-background/80 p-4 shadow-sm transition-colors hover:bg-muted/30"
+                >
+                  <div className="mb-3 h-10 w-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <p className="text-xs text-muted-foreground mb-1">Passo {index + 1}</p>
+                  <h3 className="font-semibold text-foreground leading-tight mb-1">{step.title}</h3>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{step.description}</p>
+                </article>
+              );
+            })}
+          </div>
 
-            {/* Recent Sessions (Clickable) */}
-            <div className="space-y-4">
-              <h3 className="text-sm font-medium text-white/60 uppercase tracking-wider">Últimas Sessões Realizadas</h3>
-              <div className="space-y-2">
-                {recentSessions.length > 0 ? (
-                  recentSessions.map(session => (
-                    <Link 
-                      key={session.id} 
-                      href={`/hub-dub/studio/${studioId}/sessions/${session.id}/room`}
-                      className={cn(
-                        "flex items-center gap-4 p-4 rounded-xl border border-white/5 bg-white/[0.02] group",
-                        animationsEnabled && "transition-all hover:bg-white/[0.04] hover:border-primary/20 hover:translate-x-1"
-                      )}
-                    >
-                      <div className="h-10 w-10 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0 group-hover:bg-violet-500/20 transition-colors">
-                        <Clock className="h-5 w-5 text-violet-400" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium text-white truncate group-hover:text-primary transition-colors">{session.title}</p>
-                        <p className="text-xs text-white/40 truncate">
-                          {new Date(session.scheduledAt).toLocaleDateString()} • Sessão
-                        </p>
-                      </div>
-                      <ArrowRight className="w-4 h-4 text-white/20 group-hover:text-primary transition-colors" />
-                    </Link>
-                  ))
-                ) : (
-                  <p className="text-sm text-white/40 italic">Nenhuma sessão realizada recentemente.</p>
-                )}
-              </div>
+          <div className="flex justify-end">
+            <div className="space-y-3 text-right">
+              <p className="text-sm text-muted-foreground">
+                Aprimore o setup antes de iniciar cada sessão para reduzir retrabalho.
+              </p>
+              <Link href={`/hub-dub/studio/${studioId}/tutorial-audio`}>
+                <Button variant="outline" className="gap-2 border-border/70 hover:bg-muted/40" data-testid="button-open-full-tutorial">
+                  Ver tutorial completo <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
           </div>
         </div>

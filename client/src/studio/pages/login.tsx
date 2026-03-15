@@ -130,10 +130,10 @@ export default function Login() {
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/30 flex flex-col overflow-x-hidden">
       {/* Dynamic Background */}
       <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
-        <div className="absolute inset-0 opacity-40 dark:opacity-60 scale-110">
+        <div className="absolute inset-0 opacity-40 scale-110">
           <MeshGradient />
         </div>
-        <div className="absolute inset-0 bg-white/40 dark:bg-black/40 backdrop-blur-[100px]" />
+        <div className="absolute inset-0 bg-white/40 backdrop-blur-[100px]" />
         <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-primary/20 rounded-full blur-[120px] animate-pulse" />
         <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/10 rounded-full blur-[120px] animate-pulse delay-700" />
       </div>
@@ -146,7 +146,7 @@ export default function Login() {
               whileHover={{ scale: 1.02 }}
               className="flex items-center gap-3 cursor-pointer group"
             >
-              <div className="h-10 w-10 rounded-2xl bg-white dark:bg-zinc-900 border border-border/50 flex items-center justify-center shadow-lg shadow-black/5 group-hover:border-primary/50 transition-colors">
+              <div className="h-10 w-10 rounded-2xl bg-white border border-border/50 flex items-center justify-center shadow-lg shadow-black/5 group-hover:border-primary/50 transition-colors">
                 <img src="/logo.svg" alt="V.HUB" className="h-6 w-6" />
               </div>
               <span className="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/70">V.HUB</span>
@@ -221,7 +221,7 @@ export default function Login() {
             <div className="relative group">
               <div className="absolute -inset-1 bg-gradient-to-r from-primary/30 to-blue-500/30 rounded-[2rem] blur-2xl opacity-20 group-hover:opacity-40 transition duration-1000 group-hover:duration-200" />
               
-              <div className="relative bg-white/70 dark:bg-zinc-900/80 backdrop-blur-3xl border border-white/20 dark:border-zinc-800 rounded-[2rem] shadow-2xl overflow-hidden">
+              <div className="relative bg-white/70 backdrop-blur-3xl border border-white/20 rounded-[2rem] shadow-2xl overflow-hidden">
                 <div className="p-8 md:p-10">
                   <div className="space-y-2 mb-10">
                     <h2 className="text-3xl font-bold tracking-tight">
@@ -249,7 +249,7 @@ export default function Login() {
                             onChange={(e) => setEmail(e.target.value)}
                             onBlur={() => setTouched((p) => ({ ...p, email: true }))}
                             placeholder="exemplo@estudio.com"
-                            className="pl-11 h-12 rounded-2xl border-border/40 bg-white/50 dark:bg-black/20 focus-visible:ring-primary/20 focus-visible:border-primary transition-all"
+                            className="pl-11 h-12 rounded-2xl border-border/40 bg-white/50 focus-visible:ring-primary/20 focus-visible:border-primary transition-all"
                             autoComplete="email"
                             data-testid="input-email"
                           />
@@ -298,7 +298,7 @@ export default function Login() {
                             onChange={(e) => setPassword(e.target.value)}
                             onBlur={() => setTouched((p) => ({ ...p, password: true }))}
                             placeholder="••••••••"
-                            className="pl-11 pr-11 h-12 rounded-2xl border-border/40 bg-white/50 dark:bg-black/20 focus-visible:ring-primary/20 focus-visible:border-primary transition-all"
+                            className="pl-11 pr-11 h-12 rounded-2xl border-border/40 bg-white/50 focus-visible:ring-primary/20 focus-visible:border-primary transition-all"
                             autoComplete="current-password"
                             data-testid="input-password"
                           />
@@ -429,7 +429,7 @@ export default function Login() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-[420px] rounded-[2rem] border border-white/20 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-8 shadow-2xl"
+              className="relative w-full max-w-[420px] rounded-[2rem] border border-white/20 bg-white p-8 shadow-2xl"
             >
               <div className="space-y-6">
                 <div className="space-y-2">
@@ -451,7 +451,7 @@ export default function Login() {
                     value={resetEmail}
                     onChange={(e) => setResetEmail(e.target.value)}
                     placeholder="exemplo@estudio.com"
-                    className="h-12 rounded-2xl border-border/40 bg-white/50 dark:bg-black/20 focus-visible:ring-primary/20 focus-visible:border-primary transition-all"
+                    className="h-12 rounded-2xl border-border/40 bg-white/50 focus-visible:ring-primary/20 focus-visible:border-primary transition-all"
                     data-testid="input-reset-email"
                   />
                 </div>

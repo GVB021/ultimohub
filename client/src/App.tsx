@@ -10,7 +10,6 @@ import { Loader2 } from "lucide-react";
 import { lazy, Suspense, useEffect, type ComponentType } from "react";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { initThemeMode } from "@/lib/theme-mode";
-import { ThemeProvider } from "next-themes";
 import { BackButton } from "@/components/nav/BackButton";
 import { RealtimeInvalidation } from "@/components/realtime/RealtimeInvalidation";
 
@@ -267,20 +266,22 @@ function Router() {
 }
 
 export default function App() {
+  useEffect(() => {
+    initThemeMode();
+  }, []);
+
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <ErrorBoundary>
-            <WouterRouter hook={memoryHook} searchHook={memorySearchHook}>
-              <Toaster />
-              <BackButton />
-              <RealtimeInvalidation />
-              <Router />
-            </WouterRouter>
-          </ErrorBoundary>
-        </TooltipProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <ErrorBoundary>
+          <WouterRouter hook={memoryHook} searchHook={memorySearchHook}>
+            <Toaster />
+            <BackButton />
+            <RealtimeInvalidation />
+            <Router />
+          </WouterRouter>
+        </ErrorBoundary>
+      </TooltipProvider>
+    </QueryClientProvider>
   );
 }

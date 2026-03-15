@@ -1,19 +1,17 @@
 import { memo, useMemo } from "react";
 import {
   Building2, Calendar, Film, LayoutDashboard,
-  Settings, Users, LogOut, Bell, ShieldCheck, Music, UserCircle, Activity
+  Settings, Users, LogOut, ShieldCheck, Music, UserCircle
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
   SidebarGroupContent, SidebarGroupLabel, SidebarHeader,
-  SidebarMenu, SidebarMenuButton, SidebarMenuItem,
+  SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar,
 } from "@studio/components/ui/sidebar";
 import { useStudio } from "@studio/hooks/use-studios";
 import { useAuth } from "@studio/hooks/use-auth";
 import { useStudioRole } from "@studio/hooks/use-studio-role";
-import { useQuery } from "@tanstack/react-query";
-import { authFetch } from "@studio/lib/auth-fetch";
 import { pt } from "@studio/lib/i18n";
 import { RoleBadge } from "@studio/components/ui/design-system";
 
@@ -22,16 +20,11 @@ interface AppSidebarProps {
 }
 
 export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps) {
+  const { setOpen, isMobile } = useSidebar();
   const [location] = useLocation();
   const studio = useStudio(studioId);
   const { user, logout } = useAuth();
   const { canManageMembers, canViewStaff, hasMinRole, role } = useStudioRole(studioId);
-
-  const { data: unreadCount } = useQuery({
-    queryKey: ["/api/notifications/unread-count"],
-    queryFn: () => authFetch("/api/notifications/unread-count"),
-    refetchInterval: 30000,
-  });
 
   const isStudioAdmin = user?.role === "platform_owner" || hasMinRole("studio_admin");
   const isRestrictedRole = !hasMinRole("diretor");
@@ -39,12 +32,11 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
   const navItems = useMemo(() => {
     const items = [
       { title: pt.nav.dashboard, url: `/hub-dub/studio/${studioId}/dashboard`, icon: LayoutDashboard },
+      { title: pt.nav.sessions, url: `/hub-dub/studio/${studioId}/sessions`, icon: Calendar },
     ];
     if (!isRestrictedRole) {
       items.push({ title: pt.nav.productions, url: `/hub-dub/studio/${studioId}/productions`, icon: Film });
     }
-    items.push({ title: pt.nav.sessions, url: `/hub-dub/studio/${studioId}/sessions`, icon: Calendar });
-    items.push({ title: "Estúdio Virtual", url: "/hub-dub/daw", icon: Activity });
     if (isStudioAdmin) {
       items.push({ title: pt.nav.takes, url: `/hub-dub/studio/${studioId}/takes`, icon: Music });
     }
@@ -61,7 +53,24 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
   const inactiveItemClass = "text-muted-foreground/80 hover:bg-muted/70 hover:text-foreground transition-colors";
 
   return (
-    <Sidebar className="border-r border-border/60 bg-background/72 backdrop-blur-lg shadow-sm z-20" collapsible="icon">
+    <Sidebar
+      className="border-r border-border/60 bg-background/72 backdrop-blur-lg shadow-sm z-20"
+      collapsible="icon"
+      onMouseEnter={() => {
+        if (!isMobile) setOpen(true);
+      }}
+      onMouseLeave={() => {
+        if (!isMobile) setOpen(false);
+      }}
+      onFocusCapture={() => {
+        if (!isMobile) setOpen(true);
+      }}
+      onBlurCapture={(event) => {
+        if (!isMobile && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+        }
+      }}
+    >
       <SidebarHeader className="py-6 px-4 border-b border-border/60">
         <div className="flex items-center gap-3 transition-all duration-300 group-data-[collapsible=icon]:justify-center">
           <div className="h-9 w-9 rounded-xl border border-border/70 bg-card/70 flex items-center justify-center">
@@ -108,28 +117,6 @@ export const AppSidebar = memo(function AppSidebar({ studioId }: AppSidebarProps
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  asChild
-                  isActive={location === `/hub-dub/studio/${studioId}/notifications`}
-                  className={`h-8 rounded-md transition-all duration-150 ${
-                    location === `/hub-dub/studio/${studioId}/notifications`
-                      ? activeItemClass
-                      : inactiveItemClass
-                  }`}
-                >
-                  <Link href={`/hub-dub/studio/${studioId}/notifications`} className="flex items-center gap-2.5 px-2">
-                    <Bell className="h-3.5 w-3.5 shrink-0" />
-                    <span className="text-sm">{pt.notifications.title}</span>
-                    {(unreadCount?.count ?? 0) > 0 && (
-                      <span className="ml-auto bg-primary text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center" data-testid="badge-unread-count">
-                        {unreadCount.count}
-                      </span>
-                    )}
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-
               {isStudioAdmin && (
                 <SidebarMenuItem>
                   <SidebarMenuButton

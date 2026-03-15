@@ -1,5 +1,4 @@
 import { Globe } from "lucide-react";
-import { ThemeToggleButton } from "@/components/nav/ThemeToggleButton";
 
 export function LanguageThemePill({
   lang,
@@ -13,7 +12,7 @@ export function LanguageThemePill({
       <button
         type="button"
         onClick={() => setLang(lang === "en" ? "pt" : "en")}
-        className="h-9 px-4 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors flex items-center gap-2"
+        className="h-9 px-4 rounded-full hover:bg-black/5 transition-colors flex items-center gap-2"
       >
         {lang === "en" ? (
           <>
@@ -33,8 +32,6 @@ export function LanguageThemePill({
           </>
         )}
       </button>
-      <div className="w-px h-6 bg-border/70" />
-      <ThemeToggleButton />
     </div>
   );
 }

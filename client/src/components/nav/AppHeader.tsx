@@ -3,15 +3,38 @@ import { Button } from "@/components/ui/button";
 import { LanguageThemePill } from "@/components/nav/LanguageThemePill";
 import { useAuth } from "@/hooks/use-auth";
 
+export type LandingHeaderTextConfig = {
+  brandAlt: string;
+  brandName: string;
+  navHubDub: string;
+  navHubSchool: string;
+  navHubAlign: string;
+  authEnter: string;
+  authExit: string;
+};
+
+export const defaultLandingHeaderTextConfig: LandingHeaderTextConfig = {
+  brandAlt: "THE HUB",
+  brandName: "THE HUB",
+  navHubDub: "HUBDUB",
+  navHubSchool: "HUBSCHOOL",
+  navHubAlign: "HUBALIGN",
+  authEnter: "ENTRAR",
+  authExit: "SAIR",
+};
+
 export function AppHeader({
   lang,
   setLang,
+  textConfig,
 }: {
   lang: "en" | "pt";
   setLang: (lang: "en" | "pt") => void;
+  textConfig?: Partial<LandingHeaderTextConfig>;
 }) {
   const { user, isLoading, logout, isLoggingOut } = useAuth();
   const [, navigate] = useLocation();
+  const t = { ...defaultLandingHeaderTextConfig, ...(textConfig || {}) };
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-transparent">
@@ -21,23 +44,23 @@ export function AppHeader({
             <div className="flex items-center gap-2 cursor-pointer group">
               <img
                 src="/logo.svg"
-                alt="THE HUB"
+                alt={t.brandAlt}
                 className="w-8 h-8 group-hover:scale-110 transition-transform duration-300"
               />
-              <span className="text-lg font-semibold tracking-tight text-foreground">THE HUB</span>
+              <span className="text-lg font-semibold tracking-tight text-foreground">{t.brandName}</span>
             </div>
           </Link>
         </div>
 
         <nav className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-[0.24em] text-muted-foreground uppercase">
           <Link href="/hub-dub/login" className="hover:text-foreground transition-colors">
-            HUBDUB
+            {t.navHubDub}
           </Link>
           <Link href="/hubschool" className="hover:text-foreground transition-colors">
-            HUBSCHOOL
+            {t.navHubSchool}
           </Link>
           <Link href="/hub-align" className="hover:text-foreground transition-colors">
-            HUBALIGN
+            {t.navHubAlign}
           </Link>
         </nav>
 
@@ -58,7 +81,7 @@ export function AppHeader({
               disabled={!!user && isLoggingOut}
               data-testid="button-auth"
             >
-              {user ? "SAIR" : "ENTRAR"}
+              {user ? t.authExit : t.authEnter}
             </Button>
           )}
         </div>

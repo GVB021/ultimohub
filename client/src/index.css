@@ -67,62 +67,6 @@
     --glass-shadow-hover: 0 8px 32px 0 rgba(0, 0, 0, 0.14);
   }
 
-  .dark {
-    /* Apple-like Dark Mode */
-    --background: 0 0% 0%; /* Pure black or very dark gray */
-    --foreground: 0 0% 95%;
-
-    --card: 240 10% 10%; /* #1c1c1e - Dark gray card */
-    --card-foreground: 0 0% 95%;
-    --card-border: 240 3.7% 15.9%;
-
-    --popover: 240 10% 10%;
-    --popover-foreground: 0 0% 95%;
-    --popover-border: 240 3.7% 15.9%;
-
-    --primary: 221 83% 53%;
-    --primary-foreground: 0 0% 100%;
-    --primary-border: 221 83% 53%;
-
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --secondary-border: 240 3.7% 15.9%;
-
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --muted-border: 240 3.7% 15.9%;
-
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --accent-border: 240 3.7% 15.9%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --destructive-border: 0 62.8% 30.6%;
-
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 221 83% 53%;
-    
-    --sidebar-background: 240 10% 9%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar: 240 10% 9%;
-    --sidebar-primary: 221 83% 53%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-primary-border: 221 83% 53%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-accent-border: 240 3.7% 15.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 221 83% 53%;
-
-    --glass-bg: rgba(0, 0, 0, 0.6);
-    --glass-bg-hover: rgba(0, 0, 0, 0.7);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-border-hover: rgba(255, 255, 255, 0.12);
-    --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-    --glass-shadow-hover: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
-  }
 }
 
 @layer base {
@@ -138,6 +82,12 @@
     -moz-osx-font-smoothing: grayscale;
     position: relative;
     min-height: 100vh;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: light;
+    }
   }
 
   code, pre, kbd, samp {
