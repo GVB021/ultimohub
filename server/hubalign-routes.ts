@@ -3,6 +3,7 @@ import multer from "multer";
 import { randomUUID } from "crypto";
 import { requireAuth } from "./middleware/auth";
 import { storage } from "./storage";
+import { logger } from "./lib/logger";
 import {
   checkSupabaseConnection,
   downloadFromSupabaseStorage,
@@ -282,7 +283,11 @@ export function registerHubAlignRoutes(app: Express) {
 
   app.get("/api/hubalign/files/stream", requireAuth, requireHubAlignOwner, async (req, res) => {
     try {
-      const pathOrUrl = decodeURIComponent(String(req.query.path || "")).replace(/^\/+/, "");
+      // Express decodifica req.query automaticamente.
+      // Removemos o decodeURIComponent redundante que causava falha se o caminho contivesse caracteres especiais ou '%'
+      const rawPath = String(req.query.path || "").trim();
+      const pathOrUrl = rawPath.replace(/^\/+/, "");
+      
       if (!pathOrUrl) {
         return res.status(400).json({ message: "Caminho ou URL ausente" });
       }
@@ -293,19 +298,14 @@ export function registerHubAlignRoutes(app: Express) {
 
       let response;
       if (pathOrUrl.startsWith("http")) {
-        // Se for uma URL completa (ex: Supabase public URL), tentamos baixar via URL
         const { downloadFromSupabaseStorageUrl } = await import("./lib/supabase");
         response = await downloadFromSupabaseStorageUrl(pathOrUrl, { range });
       } else {
-        // Se for apenas um caminho, assumimos que está no bucket do HubAlign ou padrão
         response = await downloadFromSupabaseStorage({ bucket, path: pathOrUrl }, range ? { range } : undefined);
       }
 
-      if (range && response.status === 206) {
-        res.status(206);
-      } else {
-        res.status(response.status);
-      }
+      // Definimos o status retornado pelo upstream (200 ou 206)
+      res.status(response.status);
 
       res.setHeader("content-type", response.headers.get("content-type") || "audio/wav");
       res.setHeader("accept-ranges", "bytes");
@@ -322,7 +322,11 @@ export function registerHubAlignRoutes(app: Express) {
       const { Readable } = await import("stream");
       Readable.fromWeb(body as any).pipe(res);
     } catch (err: any) {
-      console.error("[HubAlign] Stream error:", err);
+      logger.error("[HubAlign] Stream error:", {
+        path: req.query.path,
+        message: err?.message,
+        stack: err?.stack,
+      });
       return res.status(500).json({ message: err?.message || "Falha ao transmitir arquivo" });
     }
   });

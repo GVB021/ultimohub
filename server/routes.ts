@@ -1509,6 +1509,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       return res.status(404).json({ message: "Arquivo nao encontrado" });
     } catch (err: any) {
+      logger.error("[Takes] Download error:", {
+        takeId: req.params.id,
+        message: err?.message,
+        stack: err?.stack,
+      });
       res.status(500).json({ message: err?.message || "Erro ao baixar take" });
     }
   });
@@ -1583,6 +1588,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       return res.status(404).json({ message: "Arquivo nao encontrado" });
     } catch (err: any) {
+      logger.error("[Takes] Stream error:", {
+        takeId: req.params.id,
+        message: err?.message,
+        stack: err?.stack,
+      });
       res.status(500).json({ message: err?.message || "Erro ao reproduzir take" });
     }
   });

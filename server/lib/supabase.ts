@@ -57,16 +57,18 @@ async function fetchWithRetry(
       const elapsedMs = Date.now() - startedAt;
       if (res.ok || !shouldRetry(res.status) || attempt === retries) {
         if (!res.ok) {
-          logger.warn("[Supabase] Request failed", {
-            op: meta.op,
-            status: res.status,
-            elapsedMs,
-            attempt,
-            attemptHint: meta.attemptHint || null,
-          });
-        } else {
-          logger.debug("[Supabase] Request ok", { op: meta.op, status: res.status, elapsedMs, attempt });
-        }
+      const text = await res.text().catch(() => "");
+      logger.warn("[Supabase] Request failed", {
+        op: meta.op,
+        status: res.status,
+        elapsedMs,
+        attempt,
+        attemptHint: meta.attemptHint || null,
+        error: text.slice(0, 500),
+      });
+    } else {
+      logger.debug("[Supabase] Request ok", { op: meta.op, status: res.status, elapsedMs, attempt });
+    }
         return res;
       }
       logger.warn("[Supabase] Retryable response", { op: meta.op, status: res.status, elapsedMs, attempt });
@@ -270,6 +272,7 @@ export function parseSupabaseStorageUrl(input: string): { bucket: string; path: 
     const p = u.pathname.replace(/\/+$/g, "");
     const publicPrefix = "/storage/v1/object/public/";
     const objectPrefix = "/storage/v1/object/";
+    const signPrefix = "/storage/v1/object/sign/";
 
     const fromPrefix = (prefix: string) => {
       if (!p.startsWith(prefix)) return null;
@@ -282,7 +285,7 @@ export function parseSupabaseStorageUrl(input: string): { bucket: string; path: 
       return { bucket, path };
     };
 
-    return fromPrefix(publicPrefix) || fromPrefix(objectPrefix);
+    return fromPrefix(publicPrefix) || fromPrefix(signPrefix) || fromPrefix(objectPrefix);
   } catch {
     return null;
   }
@@ -314,7 +317,9 @@ export async function downloadFromSupabaseStorage(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Supabase download failed: HTTP ${res.status} ${text}`.trim());
+    const errorMsg = `Supabase download failed: HTTP ${res.status} ${text.slice(0, 500)}`.trim();
+    logger.error("[Supabase] Download error", { bucket, objectPath, status: res.status, error: text });
+    throw new Error(errorMsg);
   }
 
   return res;
