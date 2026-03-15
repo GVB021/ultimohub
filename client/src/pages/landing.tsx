@@ -31,11 +31,8 @@ function normalizeLandingTextConfig(input: unknown): LandingTextConfig {
   return {
     brandAlt: cleanSingleLine(obj.brandAlt, defaultLandingTextConfig.brandAlt, 32),
     brandName: cleanSingleLine(obj.brandName, defaultLandingTextConfig.brandName, 24),
-    navHubDub: cleanSingleLine(obj.navHubDub, defaultLandingTextConfig.navHubDub, 16),
-    navHubSchool: cleanSingleLine(obj.navHubSchool, defaultLandingTextConfig.navHubSchool, 16),
-    navHubAlign: cleanSingleLine(obj.navHubAlign, defaultLandingTextConfig.navHubAlign, 16),
     authEnter: cleanSingleLine(obj.authEnter, defaultLandingTextConfig.authEnter, 16),
-    authExit: cleanSingleLine(obj.authExit, defaultLandingTextConfig.authExit, 16),
+    authPanel: cleanSingleLine(obj.authPanel, defaultLandingTextConfig.authPanel, 16),
     phrasesPt: cleanPhraseList(obj.phrasesPt, defaultLandingTextConfig.phrasesPt),
     phrasesEn: cleanPhraseList(obj.phrasesEn, defaultLandingTextConfig.phrasesEn),
   };
@@ -120,11 +117,6 @@ export default function PresentationLanding() {
       {canEditLandingText && isEditorOpen && (
         <div className="fixed right-4 bottom-16 z-30 w-[min(92vw,460px)] rounded-2xl border border-border bg-background/95 backdrop-blur p-4 shadow-2xl space-y-3">
           <input className="w-full rounded-md border border-border bg-background px-3 h-9 text-sm" value={textConfig.brandName} onChange={(e) => setTextConfig((c) => ({ ...c, brandName: cleanSingleLine(e.target.value, c.brandName, 24) }))} placeholder="Marca" />
-          <div className="grid grid-cols-3 gap-2">
-            <input className="rounded-md border border-border bg-background px-2 h-9 text-xs" value={textConfig.navHubDub} onChange={(e) => setTextConfig((c) => ({ ...c, navHubDub: cleanSingleLine(e.target.value, c.navHubDub, 16) }))} />
-            <input className="rounded-md border border-border bg-background px-2 h-9 text-xs" value={textConfig.navHubSchool} onChange={(e) => setTextConfig((c) => ({ ...c, navHubSchool: cleanSingleLine(e.target.value, c.navHubSchool, 16) }))} />
-            <input className="rounded-md border border-border bg-background px-2 h-9 text-xs" value={textConfig.navHubAlign} onChange={(e) => setTextConfig((c) => ({ ...c, navHubAlign: cleanSingleLine(e.target.value, c.navHubAlign, 16) }))} />
-          </div>
           <textarea
             className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-28"
             value={(lang === "pt" ? textConfig.phrasesPt : textConfig.phrasesEn).join("\n")}

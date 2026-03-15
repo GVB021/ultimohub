@@ -1,6 +1,7 @@
 export const theHubEn = {
   auth: {
     login: "Sign In",
+    panel: "Panel",
   },
   landing: {
     hero: {
@@ -25,6 +26,7 @@ export const theHubEn = {
 export const theHubPt = {
   auth: {
     login: "Entrar",
+    panel: "Painel",
   },
   landing: {
     hero: {

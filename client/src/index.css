@@ -67,11 +67,67 @@
     --glass-shadow-hover: 0 8px 32px 0 rgba(0, 0, 0, 0.14);
   }
 
+  .dark {
+    --background: 240 10% 3.9%; /* #1d1d1f - Apple black */
+    --foreground: 0 0% 98%;
+
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --card-border: 240 3.7% 15.9%;
+
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --popover-border: 240 3.7% 15.9%;
+
+    --primary: 221 83% 53%; /* Keep primary blue */
+    --primary-foreground: 0 0% 100%;
+    --primary-border: 221 83% 53%;
+
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --secondary-border: 240 3.7% 15.9%;
+
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --muted-border: 240 3.7% 15.9%;
+
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --accent-border: 240 3.7% 15.9%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --destructive-border: 0 62.8% 30.6%;
+
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar: 240 5.9% 10%;
+    --sidebar-primary: 221 83% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-primary-border: 221 83% 53%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-accent-border: 240 3.7% 15.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 221 83% 53%;
+
+    --glass-bg: rgba(29, 29, 31, 0.7);
+    --glass-bg-hover: rgba(29, 29, 31, 0.8);
+    --glass-border: rgba(255, 255, 255, 0.05);
+    --glass-border-hover: rgba(255, 255, 255, 0.1);
+    --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+    --glass-shadow-hover: 0 8px 32px 0 rgba(0, 0, 0, 0.6);
+  }
 }
 
 @layer base {
   * {
     border-color: hsl(var(--border) / 0.25);
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
   }
 
   body {
@@ -86,7 +142,7 @@
 
   @media (prefers-color-scheme: dark) {
     :root {
-      color-scheme: light;
+      color-scheme: dark;
     }
   }
 

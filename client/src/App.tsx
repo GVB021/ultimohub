@@ -10,7 +10,6 @@ import { Loader2 } from "lucide-react";
 import { lazy, Suspense, useEffect, type ComponentType } from "react";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { initThemeMode } from "@/lib/theme-mode";
-import { BackButton } from "@/components/nav/BackButton";
 import { RealtimeInvalidation } from "@/components/realtime/RealtimeInvalidation";
 
 const lazyWithRetry = <T extends ComponentType<any>>(importer: () => Promise<{ default: T }>) =>
@@ -255,7 +254,6 @@ export default function App() {
         <ErrorBoundary>
           <WouterRouter hook={memoryHook} searchHook={memorySearchHook}>
             <Toaster />
-            <BackButton />
             <RealtimeInvalidation />
             <Router />
           </WouterRouter>

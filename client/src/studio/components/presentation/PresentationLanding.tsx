@@ -1,15 +1,18 @@
 import { motion, useScroll, useTransform, useSpring } from "framer-motion";
 import { useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { ArrowRight, Network, GraduationCap, AudioWaveform } from "lucide-react";
 import { Button } from "@studio/components/ui/button";
 import { theHubEn, theHubPt } from "@studio/lib/thehub-i18n";
 import { MeshGradient } from "@studio/components/landing/MeshGradient";
 import { LanguageThemePill } from "@studio/components/nav/LanguageThemePill";
+import { useAuth } from "@studio/hooks/use-auth";
 
 export default function PresentationLanding() {
   const [lang, setLang] = useState<"en" | "pt">("en");
   const t = lang === "en" ? theHubEn : theHubPt;
+  const { user, isLoading } = useAuth();
+  const [, navigate] = useLocation();
 
   const Header = () => (
     <header className="fixed top-0 left-0 right-0 z-50 bg-background/70 backdrop-blur-[20px] border-b border-border/60 transition-colors duration-300">
@@ -22,18 +25,25 @@ export default function PresentationLanding() {
         </div>
 
         <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-muted-foreground">
-          <a href="#hub-dub" className="hover:text-foreground transition-colors">HUB DUB</a>
-          <a href="#hubschool" className="hover:text-foreground transition-colors">HUBSCHOOL</a>
-          <a href="#hub-align" className="hover:text-foreground transition-colors">HUB ALIGN</a>
         </nav>
 
         <div className="flex items-center gap-6">
           <LanguageThemePill lang={lang} setLang={setLang} />
-          <Link href="/login">
-            <Button variant="outline" className="rounded-full px-6 bg-white/60 border-black/10 hover:bg-white/70">
-              {t.auth.login}
+          {!isLoading && (
+            <Button
+              variant="outline"
+              className="rounded-full px-6 bg-white/60 border-black/10 hover:bg-white/70"
+              onClick={() => {
+                 if (user) {
+                   navigate("/hub-dub/studios");
+                 } else {
+                   navigate("/hub-dub/login");
+                 }
+               }}
+            >
+              {user ? t.auth.panel : t.auth.login}
             </Button>
-          </Link>
+          )}
         </div>
       </div>
     </header>

@@ -6,19 +6,15 @@ import { useAuth } from "@/hooks/use-auth";
 export type LandingHeaderTextConfig = {
   brandAlt: string;
   brandName: string;
-  navHubDub: string;
-  navHubSchool: string;
-  navHubAlign: string;
   authEnter: string;
-  authExit: string;
+  authPanel: string;
 };
 
 export const defaultLandingHeaderTextConfig: LandingHeaderTextConfig = {
   brandAlt: "THE HUB",
   brandName: "THE HUB",
-  navHubDub: "HUBDUB",
   authEnter: "ENTRAR",
-  authExit: "SAIR",
+  authPanel: "Painel",
 };
 
 export function AppHeader({
@@ -30,7 +26,7 @@ export function AppHeader({
   setLang: (lang: "en" | "pt") => void;
   textConfig?: Partial<LandingHeaderTextConfig>;
 }) {
-  const { user, isLoading, logout, isLoggingOut } = useAuth();
+  const { user, isLoading } = useAuth();
   const [, navigate] = useLocation();
   const t = { ...defaultLandingHeaderTextConfig, ...(textConfig || {}) };
 
@@ -51,15 +47,6 @@ export function AppHeader({
         </div>
 
         <nav className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-[0.24em] text-muted-foreground uppercase">
-          <Link href="/hub-dub/login" className="hover:text-foreground transition-colors">
-            {t.navHubDub}
-          </Link>
-          <Link href="/hubschool" className="hover:text-foreground transition-colors">
-            {t.navHubSchool}
-          </Link>
-          <Link href="/hub-align" className="hover:text-foreground transition-colors">
-            {t.navHubAlign}
-          </Link>
         </nav>
 
         <div className="flex items-center gap-3">
@@ -71,15 +58,14 @@ export function AppHeader({
               className="rounded-full px-5 h-10 bg-transparent"
               onClick={() => {
                 if (user) {
-                  logout();
+                  navigate("/hub-dub/studios");
                 } else {
                   navigate("/hub-dub/login");
                 }
               }}
-              disabled={!!user && isLoggingOut}
               data-testid="button-auth"
             >
-              {user ? t.authExit : t.authEnter}
+              {user ? t.authPanel : t.authEnter}
             </Button>
           )}
         </div>

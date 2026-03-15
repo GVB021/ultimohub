@@ -4,6 +4,7 @@ import { motion, AnimatePresence, useDragControls } from "framer-motion";
 import { Drawer } from "vaul";
 import { authFetch } from "@studio/lib/auth-fetch";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import { ThemeToggle } from "@/components/nav/ThemeToggle";
 import {
   Mic,
   MicOff,
@@ -32,6 +33,9 @@ import {
   Loader2,
   Menu,
   ChevronRight,
+  LogOut,
+  Building2,
+  Users,
 } from "lucide-react";
 import { useToast } from "@studio/hooks/use-toast";
 import { useAuth } from "@studio/hooks/use-auth";
@@ -115,12 +119,12 @@ function DailyMeetPanel({ sessionId }: { sessionId: string }) {
             initial={{ opacity: 0, scale: 0.9, x: "calc(100vw - 320px)", y: "calc(100vh - 420px)" }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
-            className="absolute rounded-2xl overflow-hidden glass-panel shadow-2xl border border-white/10 pointer-events-auto"
+            className="absolute rounded-2xl overflow-hidden glass-panel shadow-2xl border border-border/50 pointer-events-auto"
             style={{ width: "min(300px, 30vw)", minWidth: "200px" }}
           >
             <div 
               onPointerDown={(e) => dragControls.start(e)}
-              className="flex items-center justify-between px-3 py-2 border-b border-border/50 bg-muted/20 cursor-grab active:cursor-grabbing touch-none"
+              className="flex items-center justify-between px-3 py-2 border-b border-border/50 bg-muted/40 cursor-grab active:cursor-grabbing touch-none"
             >
               <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Mic className="w-3 h-3 text-emerald-500" /> Chat de Voz
@@ -128,21 +132,21 @@ function DailyMeetPanel({ sessionId }: { sessionId: string }) {
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setIsCompact(!isCompact)}
-                  className="p-1 hover:bg-white/5 rounded transition-colors text-muted-foreground"
+                  className="p-1 hover:bg-white/10 rounded transition-colors text-muted-foreground hover:text-foreground"
                   aria-label={isCompact ? "Expandir" : "Minimizar"}
                 >
                   {isCompact ? <Maximize2 className="w-3 h-3" /> : <Minimize2 className="w-3 h-3" />}
                 </button>
                 <button
                   onClick={() => setIsOpen(false)}
-                  className="p-1 hover:bg-white/5 rounded transition-colors text-muted-foreground"
+                  className="p-1 hover:bg-white/10 rounded transition-colors text-muted-foreground hover:text-foreground"
                   aria-label="Fechar"
                 >
                   <X className="w-3 h-3" />
                 </button>
               </div>
             </div>
-            <div style={{ height: panelHeight }} className="relative bg-black/40 transition-all duration-300">
+            <div style={{ height: panelHeight }} className="relative bg-black/60 transition-all duration-300">
               {loading ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
                   <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
@@ -172,9 +176,9 @@ function DailyMeetPanel({ sessionId }: { sessionId: string }) {
         onClick={() => setIsOpen(!isOpen)}
         className="absolute bottom-20 right-5 h-12 w-12 rounded-full flex items-center justify-center shadow-lg pointer-events-auto z-[90]"
         style={{
-          background: isOpen ? "rgba(255,255,255,0.10)" : "hsl(var(--primary))",
-          color: isOpen ? "rgba(255,255,255,0.80)" : "hsl(var(--primary-foreground))",
-          border: "1px solid rgba(255,255,255,0.12)",
+          background: isOpen ? "rgba(255,255,255,0.05)" : "hsl(var(--primary))",
+          color: isOpen ? "rgba(255,255,255,0.60)" : "hsl(var(--primary-foreground))",
+          border: "1px solid rgba(255,255,255,0.1)",
           backdropFilter: "blur(16px)",
           WebkitBackdropFilter: "blur(16px)",
         }}
@@ -618,7 +622,7 @@ export default function RecordingRoom() {
   }, []);
 
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const queryClient = useQueryClient();
 
   const [currentLine, setCurrentLine] = useState(0);
@@ -672,8 +676,23 @@ export default function RecordingRoom() {
 
   const [volumeOverlay, setVolumeOverlay] = useState<number | null>(null);
   const [speedOverlay, setSpeedOverlay] = useState<number | null>(null);
+  const [charSelectorOpen, setCharSelectorOpen] = useState(false);
   const lastTapRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handleCharacterChange = (char: { id: string; name: string; voiceActorId: string | null }) => {
+    if (!recordingProfile) return;
+    const newProfile = {
+      ...recordingProfile,
+      characterId: char.id,
+      characterName: char.name,
+      voiceActorId: char.voiceActorId || user?.id || "",
+    };
+    setRecordingProfile(newProfile);
+    localStorage.setItem(`vhub_rec_profile_${sessionId}`, JSON.stringify(newProfile));
+    setCharSelectorOpen(false);
+    toast({ title: `Personagem alterado para ${char.name}` });
+  };
 
   const handleVideoTouchStart = (e: React.TouchEvent) => {
     const touch = e.touches[0];
@@ -1343,7 +1362,7 @@ export default function RecordingRoom() {
       {/* Cinematic Background */}
       <div className="fixed inset-0 z-0 pointer-events-none">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/5 via-background to-background opacity-50"></div>
-        <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] bg-repeat opacity-[0.02]"></div>
+        <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] bg-repeat opacity-[0.02] dark:opacity-[0.05]"></div>
       </div>
 
       {countdownValue > 0 && (prerollInitiatorUserId === user?.id || isDirector) && (
@@ -1523,14 +1542,13 @@ export default function RecordingRoom() {
       )}
 
       {textControlPopupOpen && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
-          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[520px] overflow-hidden" style={{ background: "rgba(15,15,30,0.95)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 12px 48px rgba(0,0,0,0.5)" }}>
-            <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-              <span className="text-sm font-semibold" style={{ color: "hsl(210 40% 96%)" }}>Controle de Texto</span>
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/50 backdrop-blur-sm">
+          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[520px] overflow-hidden bg-popover/95 backdrop-blur-xl border border-border/50 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border/10">
+              <span className="text-sm font-semibold text-foreground">Controle de Texto</span>
               <button
                 onClick={() => setTextControlPopupOpen(false)}
-                className="transition-colors"
-                style={{ color: "rgba(255,255,255,0.40)" }}
+                className="transition-colors text-muted-foreground hover:text-foreground"
                 data-testid="button-close-text-control"
               >
                 <X className="w-4 h-4" />
@@ -1538,7 +1556,7 @@ export default function RecordingRoom() {
             </div>
             <div className="px-6 py-5">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.40)" }}>Autorizacao (Alunos / Dubladores)</span>
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Autorizacao (Alunos / Dubladores)</span>
                 <button
                   onClick={() => {
                     const ok = window.confirm("Revogar permissoes temporarias e remover autorizacoes de controle de texto?");
@@ -1558,9 +1576,9 @@ export default function RecordingRoom() {
                 </button>
               </div>
 
-              <div className="text-[11px] mb-3" style={{ color: "rgba(255,255,255,0.55)" }}>
+              <div className="text-[11px] mb-3 text-muted-foreground">
                 Autorizados:{" "}
-                <span style={{ color: "rgba(255,255,255,0.85)" }}>
+                <span className="text-foreground/80">
                   {(() => {
                     const roster = (presenceUsers.length
                       ? presenceUsers
@@ -1586,7 +1604,7 @@ export default function RecordingRoom() {
                   });
                   if (!eligible.length) {
                     return (
-                      <div className="text-sm text-center py-10" style={{ color: "rgba(255,255,255,0.40)" }}>
+                      <div className="text-sm text-center py-10 text-muted-foreground/40">
                         Nenhum aluno ou dublador conectado
                       </div>
                     );
@@ -1596,23 +1614,22 @@ export default function RecordingRoom() {
                     return (
                       <label
                         key={p.userId}
-                        className="flex items-center justify-between text-xs rounded-lg px-3 py-2 cursor-pointer"
-                        style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}
+                        className="flex items-center justify-between text-xs rounded-lg px-3 py-2 cursor-pointer bg-muted/20 border border-border/30 hover:bg-muted/30 transition-colors"
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center text-[10px] font-bold shrink-0" style={{ color: "hsl(var(--primary))" }}>
+                          <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center text-[10px] font-bold shrink-0 text-primary">
                             {String(p.name || "?")[0] || "?"}
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 min-w-0">
-                              <span className="truncate" style={{ color: "rgba(255,255,255,0.78)" }}>{p.name || "Usuario"}</span>
+                              <span className="truncate text-foreground/80">{p.name || "Usuario"}</span>
                               {checked && (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/15 uppercase shrink-0" style={{ color: "hsl(var(--primary))" }}>
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/15 uppercase shrink-0 text-primary">
                                   Autorizado
                                 </span>
                               )}
                             </div>
-                            <div className="text-[10px] uppercase" style={{ color: "rgba(255,255,255,0.30)" }}>
+                            <div className="text-[10px] uppercase text-muted-foreground/50">
                               {String(p.role || "").replace(/_/g, " ") || "participante"}
                             </div>
                           </div>
@@ -1628,7 +1645,7 @@ export default function RecordingRoom() {
                               return next;
                             });
                           }}
-                          className="h-4 w-4 accent-blue-500"
+                          className="h-4 w-4 accent-primary"
                           data-testid={`checkbox-text-controller-${p.userId}`}
                         />
                       </label>
@@ -1671,6 +1688,52 @@ export default function RecordingRoom() {
             <span className="font-bold text-xs sm:text-sm truncate text-foreground">{production?.name || "Sessao"}</span>
             <span className="text-[10px] text-muted-foreground truncate">{session?.title}</span>
           </div>
+          
+          {recordingProfile && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 ml-2 group cursor-pointer hover:bg-white/10 transition-all relative" onClick={() => setCharSelectorOpen(!charSelectorOpen)}>
+              <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-primary text-[10px] font-bold">
+                {recordingProfile.characterName[0]}
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-foreground leading-tight">{recordingProfile.characterName}</span>
+                <span className="text-[9px] text-muted-foreground leading-tight">{recordingProfile.voiceActorName}</span>
+              </div>
+              <ChevronRight className={cn("w-3 h-3 text-muted-foreground transition-transform", charSelectorOpen && "rotate-90")} />
+              
+              <AnimatePresence>
+                {charSelectorOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute top-full left-0 mt-2 w-56 rounded-2xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2 z-[100]"
+                  >
+                    <div className="text-[9px] uppercase tracking-widest text-muted-foreground px-3 py-2 border-b border-border/50 mb-1">Trocar Personagem</div>
+                    <div className="max-h-64 overflow-y-auto custom-scrollbar">
+                      {charactersList?.map((char) => (
+                        <button
+                          key={char.id}
+                          onClick={(e) => { e.stopPropagation(); handleCharacterChange(char); }}
+                          className={cn(
+                            "w-full flex items-center gap-3 p-2 rounded-xl transition-all hover:bg-primary/10 text-left",
+                            recordingProfile.characterId === char.id ? "bg-primary/10 border border-primary/20" : "border border-transparent"
+                          )}
+                        >
+                          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xs font-bold">
+                            {char.name[0]}
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-xs font-bold text-foreground truncate">{char.name}</span>
+                            <span className="text-[10px] text-muted-foreground truncate">{char.voiceActorId ? "Ocupado" : "Disponivel"}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-3">
@@ -1690,6 +1753,23 @@ export default function RecordingRoom() {
             </button>
           ) : (
             <>
+              <div className="flex items-center gap-1.5 border-r border-border/60 pr-3 mr-1">
+                <Link href="/hub-dub/studios">
+                  <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/5" data-testid="button-room-switch-studio">
+                    <Building2 className="h-3 w-3" />
+                    <span className="hidden lg:inline">Trocar Estúdio</span>
+                  </button>
+                </Link>
+                <button 
+                  onClick={() => logout()}
+                  className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-red-500 transition-colors px-2 py-1 rounded-md hover:bg-red-500/5" 
+                  data-testid="button-room-logout"
+                >
+                  <LogOut className="h-3 w-3" />
+                  <span className="hidden lg:inline">Sair</span>
+                </button>
+              </div>
+              <ThemeToggle />
               <button
                 onClick={() => setDeviceSettingsOpen(true)}
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
