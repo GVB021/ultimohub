@@ -1,34 +1,49 @@
-import { memoryLocation } from "wouter/memory-location";
+import { useSyncExternalStore } from "react";
 
-const getInitialPath = () => {
-  const path = window.location.pathname + window.location.search;
-  // If we're in the hub-dub subpath, we want to start from there
-  if (path.startsWith("/hub-dub")) {
-    return path;
-  }
-  return path || "/";
+const readPath = () => `${window.location.pathname}${window.location.search}` || "/";
+
+const listeners = new Set<() => void>();
+
+const notify = () => {
+  listeners.forEach((listener) => listener());
 };
 
-const { hook: _baseHook, navigate: _baseNavigate } = memoryLocation({ 
-  path: getInitialPath()
-});
+const normalizeTarget = (to: string) => {
+  if (!to) return "/hub-dub";
+  return to.startsWith("/hub-dub") ? to : `/hub-dub${to.startsWith("/") ? "" : "/"}${to}`;
+};
+
+const onPopState = () => notify();
+window.addEventListener("popstate", onPopState);
+
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+};
 
 export const memoryNavigate = (to: string, opts?: any) => {
-  // Ensure 'to' starts with /hub-dub if it doesn't already
-  const target = to.startsWith("/hub-dub") ? to : `/hub-dub${to.startsWith("/") ? "" : "/"}${to}`;
-  _baseNavigate(target, opts);
+  const target = normalizeTarget(to);
+  const replace = Boolean(opts?.replace);
+  const current = readPath();
+  if (current !== target) {
+    if (replace) {
+      window.history.replaceState({}, "", target);
+    } else {
+      window.history.pushState({}, "", target);
+    }
+  }
+  notify();
 };
 
 export const memoryHook = (): [string, typeof memoryNavigate] => {
-  const [fullPath] = _baseHook();
-  // Strip /hub-dub prefix for internal routing logic if needed, 
-  // but wouter matches against the full path in the Switch
-  const pathname = fullPath.split("?")[0] || "/";
-  return [pathname, memoryNavigate];
+  const fullPath = useSyncExternalStore(subscribe, readPath, readPath);
+  return [fullPath.split("?")[0] || "/", memoryNavigate];
 };
 
 export const memorySearchHook = (): string => {
-  const [fullPath] = _baseHook();
+  const fullPath = useSyncExternalStore(subscribe, readPath, readPath);
   const idx = fullPath.indexOf("?");
   return idx === -1 ? "" : fullPath.slice(idx + 1);
 };

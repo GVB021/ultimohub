@@ -35,6 +35,14 @@ interface SyncMessage {
   controllerUserId?: string | null;
   controllerUserIds?: string[];
   text?: string;
+  character?: string;
+  start?: number;
+  history?: {
+    field?: "character" | "text" | "timecode";
+    before?: string;
+    after?: string;
+    by?: string;
+  };
 }
 
 const rooms = new Map<string, Set<WebSocket & { userId?: string; role?: string; name?: string; sessionId?: string }>>();
@@ -54,6 +62,11 @@ function setTextControllers(sessionId: string, userIds: Iterable<string>) {
     textControllerSessions.set(sessionId, next);
   }
   return next;
+}
+
+function canReceiveTextControl(role: string | undefined) {
+  const normalized = normalizeStudioRole(role);
+  return normalized === "dublador" || normalized === "aluno";
 }
 
 function getRoster(room: Set<WebSocket & { userId?: string; role?: string; name?: string }>) {
@@ -223,12 +236,20 @@ export function setupVideoSync(httpServer: Server) {
           } else if (msg.type === "text-control:clear-controller") {
             textControllerSessions.delete(sessionId);
           } else if (msg.type === "text-control:set-controllers") {
-            setTextControllers(sessionId, msg.targetUserIds || []);
+            const allowedTargets = (msg.targetUserIds || []).filter((targetUserId) => {
+              const target = getRoster(room as any).find((user) => user.userId === targetUserId);
+              return canReceiveTextControl(target?.role);
+            });
+            setTextControllers(sessionId, allowedTargets);
           } else if (msg.type === "text-control:grant-controller" && msg.targetUserId) {
+            const target = getRoster(room as any).find((user) => user.userId === msg.targetUserId);
+            if (!canReceiveTextControl(target?.role)) return;
             const next = new Set(getTextControllers(sessionId));
             next.add(msg.targetUserId);
             setTextControllers(sessionId, next);
           } else if (msg.type === "text-control:revoke-controller" && msg.targetUserId) {
+            const target = getRoster(room as any).find((user) => user.userId === msg.targetUserId);
+            if (!canReceiveTextControl(target?.role)) return;
             const next = new Set(getTextControllers(sessionId));
             next.delete(msg.targetUserId);
             setTextControllers(sessionId, next);
@@ -245,7 +266,7 @@ export function setupVideoSync(httpServer: Server) {
         if (msg.type === "text-control:update-line") {
           if (!isPrivileged && !isController) return;
           if (typeof msg.lineIndex !== "number") return;
-          if (typeof msg.text !== "string") return;
+          if (typeof msg.text !== "string" && typeof msg.character !== "string" && typeof msg.start !== "number") return;
         }
 
         if (msg.type === "video-seek" && typeof msg.lineIndex === "number") {

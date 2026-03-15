@@ -706,16 +706,13 @@ function UsersSection() {
 function StudiosSection() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [deleteConfirm, setDeleteConfirm] = useState<any | null>(null);
   const [editStudio, setEditStudio] = useState<any | null>(null);
   const [editForm, setEditForm] = useState({ name: "", slug: "", isActive: true });
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState({ name: "", studioAdminUserId: "" });
-  const [studyStudio, setStudyStudio] = useState<any | null>(null);
-  const [studyConfigForm, setStudyConfigForm] = useState({ capacity: "", deadlineDays: "", autoNotify: true, eligibilityRoles: "aluno,dublador" });
-  const [selectedAllocationUserId, setSelectedAllocationUserId] = useState("");
-  const [progressValue, setProgressValue] = useState("0");
 
   const { data: studiosList = [], isLoading } = useQuery({
     queryKey: ["/api/admin/studios"],
@@ -730,24 +727,6 @@ function StudiosSection() {
   });
 
   const approvedUsers = usersList.filter((u: any) => u.role !== "platform_owner" && u.status === "approved");
-
-  const { data: studyConfig } = useQuery({
-    queryKey: ["/api/admin/studios", studyStudio?.id, "study-config"],
-    enabled: Boolean(studyStudio?.id),
-    queryFn: () => authFetch(`/api/admin/studios/${studyStudio.id}/study-config`) as Promise<any>,
-  });
-
-  const { data: studyAllocation } = useQuery({
-    queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"],
-    enabled: Boolean(studyStudio?.id),
-    queryFn: () => authFetch(`/api/admin/studios/${studyStudio.id}/study-allocation`) as Promise<any>,
-  });
-
-  const { data: studyMembers = [] } = useQuery({
-    queryKey: ["/api/admin/studios", studyStudio?.id, "users"],
-    enabled: Boolean(studyStudio?.id),
-    queryFn: () => authFetch(`/api/admin/studios/${studyStudio.id}/users`) as Promise<any[]>,
-  });
 
   const createMut = useMutation({
     mutationFn: (data: { name: string; studioAdminUserId?: string }) =>
@@ -779,51 +758,7 @@ function StudiosSection() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/admin/studios"] }); toast({ title: "Estudio atualizado" }); },
   });
 
-  const saveStudyConfigMut = useMutation({
-    mutationFn: (payload: any) => authFetch(`/api/admin/studios/${studyStudio.id}/study-config`, { method: "PUT", body: JSON.stringify(payload) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-config"] });
-      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
-      toast({ title: "Configuracao de estudo atualizada" });
-    },
-    onError: (e: any) => toast({ title: e.message || "Falha ao salvar configuracao do estudo", variant: "destructive" }),
-  });
-
-  const allocateMut = useMutation({
-    mutationFn: (userId: string) => authFetch(`/api/admin/studios/${studyStudio.id}/study-allocate/${userId}`, { method: "POST" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
-      toast({ title: "Alocacao processada" });
-    },
-    onError: (e: any) => toast({ title: e.message || "Falha na alocacao", variant: "destructive" }),
-  });
-
-  const unallocateMut = useMutation({
-    mutationFn: (userId: string) => authFetch(`/api/admin/studios/${studyStudio.id}/study-unallocate/${userId}`, { method: "POST" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
-      toast({ title: "Usuario desalocado do estudo" });
-    },
-    onError: (e: any) => toast({ title: e.message || "Falha na desalocacao", variant: "destructive" }),
-  });
-
-  const progressMut = useMutation({
-    mutationFn: ({ userId, progress }: { userId: string; progress: number }) =>
-      authFetch(`/api/admin/studios/${studyStudio.id}/study-progress/${userId}`, { method: "PUT", body: JSON.stringify({ progress }) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
-      toast({ title: "Progresso atualizado" });
-    },
-    onError: (e: any) => toast({ title: e.message || "Falha ao atualizar progresso", variant: "destructive" }),
-  });
-
   const filtered = studiosList.filter(s => s.name?.toLowerCase().includes(search.toLowerCase()));
-
-  const openStudyManager = (studio: any) => {
-    setStudyStudio(studio);
-    setSelectedAllocationUserId("");
-    setProgressValue("0");
-  };
 
   return (
     <div className="space-y-4">
@@ -878,8 +813,8 @@ function StudiosSection() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          title="Gerenciar Estudo"
-                          onClick={() => openStudyManager(studio)}
+                          title="Gerenciar Estudio"
+                          onClick={() => setLocation(`/hub-dub/admin/studios/${studio.id}/management`)}
                           data-testid={`button-study-manager-${studio.id}`}
                         >
                           <UserCog className="h-4 w-4" />
@@ -974,132 +909,6 @@ function StudiosSection() {
               {createMut.isPending ? "Criando..." : "Criar Estudio"}
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={!!studyStudio}
-        onOpenChange={(open) => {
-          if (!open) {
-            setStudyStudio(null);
-            setSelectedAllocationUserId("");
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Gestao de Estudo</DialogTitle>
-            <DialogDescription>{studyStudio?.name}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Capacidade</Label>
-                <Input
-                  type="number"
-                  value={studyConfigForm.capacity || String(studyConfig?.capacity ?? "")}
-                  onChange={(e) => setStudyConfigForm((f) => ({ ...f, capacity: e.target.value }))}
-                  data-testid="input-study-capacity"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Prazo (dias)</Label>
-                <Input
-                  type="number"
-                  value={studyConfigForm.deadlineDays || String(studyConfig?.deadlineDays ?? "")}
-                  onChange={(e) => setStudyConfigForm((f) => ({ ...f, deadlineDays: e.target.value }))}
-                  data-testid="input-study-deadline-days"
-                />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Papeis elegiveis (csv)</Label>
-              <Input
-                value={studyConfigForm.eligibilityRoles || String((studyConfig?.eligibilityRoles || []).join(","))}
-                onChange={(e) => setStudyConfigForm((f) => ({ ...f, eligibilityRoles: e.target.value }))}
-                data-testid="input-study-eligibility"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Checkbox
-                checked={studyConfigForm.autoNotify}
-                onCheckedChange={(v) => setStudyConfigForm((f) => ({ ...f, autoNotify: Boolean(v) }))}
-                data-testid="check-study-auto-notify"
-              />
-              <span className="text-sm">Notificar alocacao automaticamente</span>
-            </div>
-            <Button
-              size="sm"
-              onClick={() =>
-                saveStudyConfigMut.mutate({
-                  capacity: studyConfigForm.capacity ? Number(studyConfigForm.capacity) : null,
-                  deadlineDays: studyConfigForm.deadlineDays ? Number(studyConfigForm.deadlineDays) : null,
-                  eligibilityRoles: String(studyConfigForm.eligibilityRoles || "").split(",").map((v) => v.trim()).filter(Boolean),
-                  autoNotify: studyConfigForm.autoNotify,
-                })
-              }
-              disabled={saveStudyConfigMut.isPending}
-              data-testid="button-save-study-config"
-            >
-              Salvar Configuracao
-            </Button>
-            <div className="rounded-md border border-border p-3 space-y-2">
-              <div className="text-sm font-semibold">Alocacao de Usuarios</div>
-              <div className="text-xs text-muted-foreground">
-                Alocados: {studyAllocation?.allocatedCount ?? 0} • Fila: {studyAllocation?.waitlistCount ?? 0}
-              </div>
-              <Select value={selectedAllocationUserId} onValueChange={setSelectedAllocationUserId}>
-                <SelectTrigger data-testid="select-study-user">
-                  <SelectValue placeholder="Selecionar usuario aprovado no estudo" />
-                </SelectTrigger>
-                <SelectContent>
-                  {studyMembers.filter((m: any) => m.status === "approved").map((m: any) => (
-                    <SelectItem key={m.userId} value={m.userId}>
-                      {m.user?.displayName || m.user?.fullName || m.user?.email || m.userId}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => selectedAllocationUserId && allocateMut.mutate(selectedAllocationUserId)}
-                  disabled={!selectedAllocationUserId || allocateMut.isPending}
-                  data-testid="button-study-allocate"
-                >
-                  Alocar
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => selectedAllocationUserId && unallocateMut.mutate(selectedAllocationUserId)}
-                  disabled={!selectedAllocationUserId || unallocateMut.isPending}
-                  data-testid="button-study-unallocate"
-                >
-                  Desalocar
-                </Button>
-              </div>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={progressValue}
-                  onChange={(e) => setProgressValue(e.target.value)}
-                  data-testid="input-study-progress"
-                />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => selectedAllocationUserId && progressMut.mutate({ userId: selectedAllocationUserId, progress: Number(progressValue || 0) })}
-                  disabled={!selectedAllocationUserId || progressMut.isPending}
-                  data-testid="button-study-progress"
-                >
-                  Atualizar Progresso
-                </Button>
-              </div>
-            </div>
-          </div>
         </DialogContent>
       </Dialog>
     </div>

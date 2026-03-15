@@ -1,42 +1,52 @@
-import { memoryLocation } from "wouter/memory-location";
+import { useSyncExternalStore } from "react";
 
-const initialFull = window.location.pathname + window.location.search;
+const readPath = () => `${window.location.pathname}${window.location.search}` || "/";
+const listeners = new Set<() => void>();
 
-const { hook: _baseHook, navigate: _baseNavigate } = memoryLocation({ path: initialFull || "/" });
-
-const historyStack: string[] = [initialFull || "/"];
-
-export const memoryNavigate = (to: string, opts?: any) => {
-  const next = to || "/";
-  const replace = Boolean(opts?.replace);
-  if (replace) {
-    historyStack[historyStack.length - 1] = next;
-  } else {
-    historyStack.push(next);
-  }
-  _baseNavigate(to, opts);
+const notify = () => {
+  listeners.forEach((listener) => listener());
 };
 
-export const canGoBack = () => historyStack.length > 1;
+window.addEventListener("popstate", notify);
+
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+};
+
+export const memoryNavigate = (to: string, opts?: any) => {
+  const target = to || "/";
+  const replace = Boolean(opts?.replace);
+  const current = readPath();
+  if (current !== target) {
+    if (replace) {
+      window.history.replaceState({}, "", target);
+    } else {
+      window.history.pushState({}, "", target);
+    }
+  }
+  notify();
+};
+
+export const canGoBack = () => window.history.length > 1;
 
 export const goBack = (fallback = "/") => {
-  if (historyStack.length > 1) {
-    historyStack.pop();
-    const prev = historyStack[historyStack.length - 1] || fallback;
-    _baseNavigate(prev, { replace: true });
+  if (canGoBack()) {
+    window.history.back();
     return;
   }
-  _baseNavigate(fallback, { replace: true });
+  memoryNavigate(fallback, { replace: true });
 };
 
 export const memoryHook = (): [string, typeof memoryNavigate] => {
-  const [fullPath] = _baseHook();
-  const pathname = fullPath.split("?")[0] || "/";
-  return [pathname, memoryNavigate];
+  const fullPath = useSyncExternalStore(subscribe, readPath, readPath);
+  return [fullPath.split("?")[0] || "/", memoryNavigate];
 };
 
 export const memorySearchHook = (): string => {
-  const [fullPath] = _baseHook();
+  const fullPath = useSyncExternalStore(subscribe, readPath, readPath);
   const idx = fullPath.indexOf("?");
   return idx === -1 ? "" : fullPath.slice(idx + 1);
 };

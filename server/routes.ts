@@ -225,6 +225,10 @@ function isMasterEmail(email: string | null | undefined) {
   return String(email || "").trim().toLowerCase() === "borbaggabriel@gmail.com";
 }
 
+function isStudioManagementEmail(email: string | null | undefined) {
+  return String(email || "").trim().toLowerCase() === "borbaggabriel@gmail.com";
+}
+
 function sessionUserIdFromPayload(payload: any): string | null {
   const userId = payload?.passport?.user;
   if (!userId) return null;
@@ -1846,148 +1850,61 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(enriched);
   });
 
-  app.get("/api/admin/studios/:id/study-config", requireAuth, requireAdmin, async (_req, res) => {
-    const profile = await storage.getStudioProfile(_req.params.id);
-    const studyConfig = profile?.studyConfig || {
-      capacity: null,
-      deadlineDays: null,
-      eligibilityRoles: ["aluno", "dublador"],
-      autoNotify: true,
-    };
-    res.status(200).json(studyConfig);
-  });
-
-  app.put("/api/admin/studios/:id/study-config", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const payload = z.object({
-        capacity: z.number().int().positive().nullable().optional(),
-        deadlineDays: z.number().int().positive().nullable().optional(),
-        eligibilityRoles: z.array(z.string()).optional(),
-        autoNotify: z.boolean().optional(),
-      }).parse(req.body || {});
-      const profile = await storage.getStudioProfile(req.params.id);
-      const next = {
-        capacity: payload.capacity ?? profile?.studyConfig?.capacity ?? null,
-        deadlineDays: payload.deadlineDays ?? profile?.studyConfig?.deadlineDays ?? null,
-        eligibilityRoles: payload.eligibilityRoles?.length ? payload.eligibilityRoles : (profile?.studyConfig?.eligibilityRoles || ["aluno", "dublador"]),
-        autoNotify: payload.autoNotify ?? profile?.studyConfig?.autoNotify ?? true,
-      };
-      await storage.upsertStudioProfile(req.params.id, { studyConfig: next });
-      await logAdminAction(req, "UPDATE_STUDY_CONFIG", `Atualizou configuracao de estudo do estudio ${req.params.id}`);
-      res.status(200).json(next);
-    } catch (err: any) {
-      res.status(400).json({ message: err?.message || "Dados invalidos para configuracao de estudo" });
+  app.get("/api/admin/studios/:id/management-settings", requireAuth, async (req, res) => {
+    const actor = (req as any).user;
+    if (!isStudioManagementEmail(actor?.email)) {
+      return res.status(403).json({ message: "Acesso negado" });
     }
-  });
-
-  app.get("/api/admin/studios/:id/study-allocation", requireAuth, requireAdmin, async (req, res) => {
-    const memberships = await storage.getStudioMemberships(req.params.id);
+    const studio = await storage.getStudio(req.params.id);
+    if (!studio) {
+      return res.status(404).json({ message: "Estudio nao encontrado" });
+    }
     const profile = await storage.getStudioProfile(req.params.id);
-    const studyConfig = profile?.studyConfig || {};
-    const studyAllocations = profile?.studyAllocations || {};
-    const studyWaitlist: string[] = Array.isArray(profile?.studyWaitlist) ? profile.studyWaitlist : [];
-    const studyProgress = profile?.studyProgress || {};
-    const approved = memberships.filter((m: any) => m.status === "approved");
-    res.status(200).json({
-      config: studyConfig,
-      capacity: studyConfig?.capacity ?? null,
-      allocatedCount: Object.keys(studyAllocations).length,
-      waitlistCount: studyWaitlist.length,
-      allocatedUsers: approved
-        .filter((m: any) => studyAllocations[m.userId])
-        .map((m: any) => ({
-          userId: m.userId,
-          email: m.user?.email || null,
-          displayName: m.user?.displayName || m.user?.fullName || null,
-          allocation: studyAllocations[m.userId],
-          progress: studyProgress[m.userId] || null,
-        })),
-      waitlistUsers: approved
-        .filter((m: any) => studyWaitlist.includes(m.userId))
-        .map((m: any) => ({
-          userId: m.userId,
-          email: m.user?.email || null,
-          displayName: m.user?.displayName || m.user?.fullName || null,
-        })),
+    const defaults = {
+      maxVoiceActors: 1,
+      maxDirectors: 1,
+      totalSessionsAvailable: 1,
+      simultaneousProductionsLimit: 1,
+      maxDirectorsPerSession: 1,
+      maxDubbersStudentsPerSession: 1,
+    };
+    const settings = {
+      ...defaults,
+      ...(profile?.studioManagementConfig || {}),
+    };
+    return res.status(200).json({
+      studio: {
+        id: studio.id,
+        name: studio.name,
+        slug: studio.slug,
+      },
+      settings,
     });
   });
 
-  app.post("/api/admin/studios/:id/study-allocate/:userId", requireAuth, requireAdmin, async (req, res) => {
-    const memberships = await storage.getStudioMemberships(req.params.id);
-    const targetMembership = memberships.find((m: any) => m.userId === req.params.userId && m.status === "approved");
-    if (!targetMembership) return res.status(404).json({ message: "Usuario nao aprovado neste estudio" });
-    const profile = await storage.getStudioProfile(req.params.id);
-    const studyConfig = profile?.studyConfig || {};
-    const eligibilityRoles: string[] = Array.isArray(studyConfig?.eligibilityRoles) ? studyConfig.eligibilityRoles : ["aluno", "dublador"];
-    const membershipRoles = await storage.getUserStudioRoles(targetMembership.id);
-    const roleList = membershipRoles.map((r: any) => r.role);
-    const isEligible = roleList.some((role: string) => eligibilityRoles.includes(role));
-    if (!isEligible) {
-      return res.status(400).json({ message: "Usuario nao atende regras de elegibilidade para este estudo" });
+  app.put("/api/admin/studios/:id/management-settings", requireAuth, async (req, res) => {
+    const actor = (req as any).user;
+    if (!isStudioManagementEmail(actor?.email)) {
+      return res.status(403).json({ message: "Acesso negado" });
     }
-    const capacity = Number(studyConfig?.capacity || 0) || null;
-    const studyAllocations = { ...(profile?.studyAllocations || {}) } as Record<string, any>;
-    const waitlist: string[] = Array.isArray(profile?.studyWaitlist) ? [...profile.studyWaitlist] : [];
-    const now = new Date();
-    const deadlineDays = Number(studyConfig?.deadlineDays || 0) || null;
-    const deadlineAt = deadlineDays ? new Date(now.getTime() + deadlineDays * 24 * 60 * 60 * 1000).toISOString() : null;
-    if (!studyAllocations[req.params.userId] && capacity && Object.keys(studyAllocations).length >= capacity) {
-      if (!waitlist.includes(req.params.userId)) waitlist.push(req.params.userId);
-      await storage.upsertStudioProfile(req.params.id, { studyWaitlist: waitlist, studyAllocations });
-      await storage.createNotification({
-        userId: req.params.userId,
-        type: "study_waitlist",
-        title: "Estudo em fila de espera",
-        message: "Voce foi adicionado a fila de espera deste estudo por limite de vagas.",
-        isRead: false,
-        relatedId: req.params.id,
-      });
-      await logAdminAction(req, "ADD_STUDY_WAITLIST", `Usuario ${req.params.userId} entrou em fila no estudio ${req.params.id}`);
-      return res.status(200).json({ mode: "waitlist", waitlistCount: waitlist.length });
-    }
-    studyAllocations[req.params.userId] = {
-      allocatedAt: now.toISOString(),
-      deadlineAt,
-      status: "allocated",
-    };
-    const nextWaitlist = waitlist.filter((userId: string) => userId !== req.params.userId);
-    await storage.upsertStudioProfile(req.params.id, { studyAllocations, studyWaitlist: nextWaitlist });
-    if (studyConfig?.autoNotify !== false) {
-      await storage.createNotification({
-        userId: req.params.userId,
-        type: "study_assigned",
-        title: "Novo estudo disponível",
-        message: "Voce foi alocado em um novo estudo.",
-        isRead: false,
-        relatedId: req.params.id,
-      });
-    }
-    await logAdminAction(req, "ALLOCATE_USER_TO_STUDY", `Alocou usuario ${req.params.userId} no estudio ${req.params.id}`);
-    res.status(200).json({ mode: "allocated", allocation: studyAllocations[req.params.userId] });
-  });
-
-  app.post("/api/admin/studios/:id/study-unallocate/:userId", requireAuth, requireAdmin, async (req, res) => {
-    const profile = await storage.getStudioProfile(req.params.id);
-    const studyAllocations = { ...(profile?.studyAllocations || {}) } as Record<string, any>;
-    const waitlist: string[] = Array.isArray(profile?.studyWaitlist) ? [...profile.studyWaitlist] : [];
-    delete studyAllocations[req.params.userId];
-    const nextWaitlist = waitlist.filter((id: string) => id !== req.params.userId);
-    await storage.upsertStudioProfile(req.params.id, { studyAllocations, studyWaitlist: nextWaitlist });
-    await logAdminAction(req, "UNALLOCATE_USER_FROM_STUDY", `Desalocou usuario ${req.params.userId} do estudio ${req.params.id}`);
-    res.status(200).json({ ok: true });
-  });
-
-  app.put("/api/admin/studios/:id/study-progress/:userId", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const payload = z.object({ progress: z.number().min(0).max(100) }).parse(req.body || {});
-      const profile = await storage.getStudioProfile(req.params.id);
-      const progressMap = { ...(profile?.studyProgress || {}) } as Record<string, any>;
-      progressMap[req.params.userId] = { progress: payload.progress, updatedAt: new Date().toISOString() };
-      await storage.upsertStudioProfile(req.params.id, { studyProgress: progressMap });
-      await logAdminAction(req, "UPDATE_STUDY_PROGRESS", `Atualizou progresso de ${req.params.userId} para ${payload.progress}% no estudio ${req.params.id}`);
-      res.status(200).json(progressMap[req.params.userId]);
+      const payload = z.object({
+        maxVoiceActors: z.number().int().positive(),
+        maxDirectors: z.number().int().positive(),
+        totalSessionsAvailable: z.number().int().positive(),
+        simultaneousProductionsLimit: z.number().int().positive(),
+        maxDirectorsPerSession: z.number().int().positive(),
+        maxDubbersStudentsPerSession: z.number().int().positive(),
+      }).parse(req.body || {});
+      const studio = await storage.getStudio(req.params.id);
+      if (!studio) {
+        return res.status(404).json({ message: "Estudio nao encontrado" });
+      }
+      await storage.upsertStudioProfile(req.params.id, { studioManagementConfig: payload });
+      await logAdminAction(req, "UPDATE_STUDIO_MANAGEMENT_SETTINGS", `Atualizou configuracoes de gestao do estudio ${req.params.id}`);
+      return res.status(200).json(payload);
     } catch (err: any) {
-      res.status(400).json({ message: err?.message || "Dados invalidos para progresso" });
+      return res.status(400).json({ message: err?.errors?.[0]?.message || err?.message || "Dados invalidos para configuracoes do estudio" });
     }
   });
 

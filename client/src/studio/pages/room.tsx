@@ -20,6 +20,7 @@ import {
   X,
   Monitor,
   User,
+  Users,
   Edit3,
   Download,
   Loader2,
@@ -75,6 +76,12 @@ export interface ScriptLine {
   end: number;
   text: string;
 }
+
+type ScriptLineOverride = {
+  character?: string;
+  text?: string;
+  start?: number;
+};
 
 export type RecordingStatus =
   | "idle"
@@ -143,6 +150,30 @@ function keyLabel(code: string) {
   if (code.startsWith("Key")) return code.slice(3);
   if (code.startsWith("Arrow")) return code.slice(5);
   return code;
+}
+
+function normalizeRoomRole(role: unknown) {
+  const value = String(role || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (value === "director") return "diretor";
+  if (value === "admin") return "studio_admin";
+  if (value === "platformowner") return "platform_owner";
+  if (value === "master") return "master";
+  return value;
+}
+
+function canReleaseTextForRole(role: unknown) {
+  const normalized = normalizeRoomRole(role);
+  return normalized === "diretor" || normalized === "studio_admin" || normalized === "master" || normalized === "platform_owner";
+}
+
+function canViewPresenceForRole(role: unknown) {
+  const normalized = normalizeRoomRole(role);
+  return normalized !== "dublador" && normalized !== "aluno";
+}
+
+function canReceiveTextControl(role: unknown) {
+  const normalized = normalizeRoomRole(role);
+  return normalized === "dublador" || normalized === "aluno";
 }
 
 interface RecordingProfile {
@@ -526,7 +557,21 @@ export default function RecordingRoom() {
     } catch {}
   }, [sessionId]);
 
-  const scriptLines: ScriptLine[] = (() => {
+  const [lineOverrides, setLineOverrides] = useState<Record<number, ScriptLineOverride>>({});
+  const [lineEditHistory, setLineEditHistory] = useState<Record<number, Array<{
+    id: string;
+    field: "character" | "text" | "timecode";
+    before: string;
+    after: string;
+    at: string;
+    by: string;
+  }>>>({});
+  const [editingField, setEditingField] = useState<{ lineIndex: number; field: "character" | "text" | "timecode" } | null>(null);
+  const [editingDraftValue, setEditingDraftValue] = useState("");
+  const [recordingsPlayerOpenId, setRecordingsPlayerOpenId] = useState<string | null>(null);
+  const [loopRangeMeta, setLoopRangeMeta] = useState<{ startIndex: number; endIndex: number } | null>(null);
+
+  const baseScriptLines: ScriptLine[] = useMemo(() => {
     if (!production?.scriptJson) return [];
     try {
       const parsed = JSON.parse(production.scriptJson);
@@ -538,17 +583,13 @@ export default function RecordingRoom() {
       } else {
         return [];
       }
-
       const toSeconds3 = (seconds: number) => Math.round(seconds * 1000) / 1000;
-
       const normalized = rawLines.map((line: any) => {
         const character = line.character || line.personagem || line.char || "";
         const text = line.text || line.fala || line.dialogue || line.dialog || "";
-
         if (typeof line.tempoEmSegundos === "number" && Number.isFinite(line.tempoEmSegundos)) {
           return { character, start: toSeconds3(line.tempoEmSegundos), text };
         }
-
         const rawTime = line.tempo ?? line.start ?? line.timecode ?? line.tc ?? "00:00:00";
         try {
           return { character, start: toSeconds3(parseUniversalTimecodeToSeconds(rawTime, 24)), text };
@@ -556,9 +597,7 @@ export default function RecordingRoom() {
           return { character, start: toSeconds3(parseTimecode(rawTime)), text };
         }
       });
-
-      const sorted = [...normalized]
-        .sort((a, b) => a.start - b.start);
+      const sorted = [...normalized].sort((a, b) => a.start - b.start);
       return sorted.map((line, i) => ({
         ...line,
         end: Math.max(sorted[i + 1]?.start ?? (line.start + 10), line.start + 0.001),
@@ -567,7 +606,33 @@ export default function RecordingRoom() {
       console.error("[Room] Failed to parse scriptJson:", e);
       return [];
     }
-  })();
+  }, [production?.scriptJson]);
+
+  useEffect(() => {
+    setLineOverrides({});
+    setLineEditHistory({});
+    setEditingField(null);
+    setEditingDraftValue("");
+  }, [production?.id, production?.scriptJson]);
+
+  const scriptLines: ScriptLine[] = useMemo(() => {
+    const merged = baseScriptLines.map((line, index) => {
+      const override = lineOverrides[index];
+      return {
+        character: override?.character ?? line.character,
+        text: override?.text ?? line.text,
+        start: typeof override?.start === "number" ? override.start : line.start,
+        end: line.end,
+      };
+    });
+    return merged.map((line, index) => {
+      const next = merged[index + 1];
+      return {
+        ...line,
+        end: Math.max(next?.start ?? (line.start + 10), line.start + 0.001),
+      };
+    });
+  }, [baseScriptLines, lineOverrides]);
 
   const currentScriptLine = scriptLines[currentLine];
   const formatLiveTimecode = useCallback((seconds: number) => {
@@ -618,12 +683,40 @@ export default function RecordingRoom() {
   }, [queryClient, sessionId, toast, logFeatureAudit]);
 
   const handleDiscardTake = useCallback(async (take: any) => {
-    const takeId = take.id;
-    await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
-    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
-    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
-    await logFeatureAudit("room.take.discarded", { takeId });
-    toast({ title: "Take descartado" });
+    const takeId = String(take.id);
+    const takesQueryKey = ["/api/sessions", sessionId, "takes"] as const;
+    const recordingsQueryKey = ["/api/sessions", sessionId, "recordings"] as const;
+    const previousTakes = queryClient.getQueryData(takesQueryKey);
+    const previousRecordings = queryClient.getQueryData(recordingsQueryKey);
+    setOptimisticRemovingTakeIds((prev) => {
+      const next = new Set(prev);
+      next.add(takeId);
+      return next;
+    });
+    queryClient.setQueryData(takesQueryKey, (current: any) =>
+      Array.isArray(current) ? current.filter((item: any) => String(item?.id || "") !== takeId) : current
+    );
+    queryClient.setQueryData(recordingsQueryKey, (current: any) =>
+      Array.isArray(current) ? current.filter((item: any) => String(item?.id || "") !== takeId) : current
+    );
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 260));
+      await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
+      await queryClient.invalidateQueries({ queryKey: takesQueryKey });
+      await queryClient.invalidateQueries({ queryKey: recordingsQueryKey });
+      await logFeatureAudit("room.take.discarded", { takeId });
+      toast({ title: "Take descartado" });
+    } catch (error: any) {
+      queryClient.setQueryData(takesQueryKey, previousTakes);
+      queryClient.setQueryData(recordingsQueryKey, previousRecordings);
+      toast({ title: "Falha ao descartar take", description: error?.message || "Tente novamente", variant: "destructive" });
+    } finally {
+      setOptimisticRemovingTakeIds((prev) => {
+        const next = new Set(prev);
+        next.delete(takeId);
+        return next;
+      });
+    }
   }, [queryClient, sessionId, toast, logFeatureAudit]);
 
   const [videoTime, setVideoTime] = useState(0);
@@ -658,25 +751,21 @@ export default function RecordingRoom() {
 
   const [takesPopupOpen, setTakesPopupOpen] = useState(false);
   const [takePreviewId, setTakePreviewId] = useState<string | null>(null);
+  const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
   const takePreviewAudioRef = useRef<HTMLAudioElement>(null);
 
   const [textControlPopupOpen, setTextControlPopupOpen] = useState(false);
-  const [lineEdits, setLineEdits] = useState<Record<number, string>>({});
-  const [editingLineIndex, setEditingLineIndex] = useState<number | null>(null);
-  const [editingLineText, setEditingLineText] = useState("");
-
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
-  const [pendingTextControllerUserIds, setPendingTextControllerUserIds] = useState<Set<string>>(new Set());
-  const [controlPermissions, setControlPermissions] = useState<Set<string>>(new Set());
-  const [globalControlEnabled, setGlobalControlEnabled] = useState(false);
   const [presenceUsers, setPresenceUsers] = useState<any[]>([]);
 
-  const isDirector = useMemo(() => {
-    if (!user || !session?.participants) return false;
-    if (user.role === "platform_owner") return true;
-    const me = session.participants.find((p: any) => p.userId === user.id);
-    return me?.role === "director" || me?.role === "diretor" || me?.role === "studio_admin" || me?.role === "master";
-  }, [user, session]);
+  const mySessionRole = useMemo(() => {
+    const participantRole = session?.participants?.find((p: any) => p.userId === user?.id)?.role;
+    if (participantRole) return normalizeRoomRole(participantRole);
+    return normalizeRoomRole(user?.role);
+  }, [session?.participants, user?.id, user?.role]);
+  const isDirector = canReleaseTextForRole(mySessionRole);
+  const canReleaseText = canReleaseTextForRole(mySessionRole);
+  const canViewOnlineUsers = canViewPresenceForRole(mySessionRole);
 
   const isPrivileged = isDirector || user?.role === "platform_owner";
   const scopedRecordings = useMemo(() => {
@@ -694,6 +783,18 @@ export default function RecordingRoom() {
   const hasApproverPresent = useMemo(() => {
     return presenceUsers.some((p: any) => isApproverRole(p?.role) && p?.userId !== user?.id);
   }, [presenceUsers, isApproverRole, user?.id]);
+  const onlineRosterForCurrentRole = useMemo(() => {
+    if (!canViewOnlineUsers) return [];
+    const map = new Map<string, any>();
+    presenceUsers.forEach((presence) => {
+      if (!presence?.userId) return;
+      map.set(String(presence.userId), presence);
+    });
+    return Array.from(map.values());
+  }, [presenceUsers, canViewOnlineUsers]);
+  const textControlCandidates = useMemo(() => {
+    return presenceUsers.filter((presence: any) => canReceiveTextControl(presence?.role));
+  }, [presenceUsers]);
 
   const canTextControl = useMemo(() => {
     if (isPrivileged) return true;
@@ -715,10 +816,40 @@ export default function RecordingRoom() {
     }
   }, []);
 
+  const applyScriptLinePatch = useCallback((lineIndex: number, patch: ScriptLineOverride) => {
+    if (!Number.isInteger(lineIndex) || lineIndex < 0) return;
+    setLineOverrides((prev) => {
+      const current = prev[lineIndex] || {};
+      return {
+        ...prev,
+        [lineIndex]: { ...current, ...patch },
+      };
+    });
+  }, []);
+
+  const pushEditHistory = useCallback((lineIndex: number, field: "character" | "text" | "timecode", before: string, after: string, by: string) => {
+    if (before === after) return;
+    const entry = {
+      id: `${lineIndex}_${field}_${Date.now()}`,
+      field,
+      before,
+      after,
+      at: new Date().toISOString(),
+      by,
+    };
+    setLineEditHistory((prev) => {
+      const list = prev[lineIndex] || [];
+      return {
+        ...prev,
+        [lineIndex]: [entry, ...list].slice(0, 25),
+      };
+    });
+  }, []);
+
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const ws = new WebSocket(`${protocol}//${host}/api/sessions/${sessionId}/ws`);
+    const ws = new WebSocket(`${protocol}//${host}/ws/video-sync?sessionId=${encodeURIComponent(sessionId)}`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -740,10 +871,24 @@ export default function RecordingRoom() {
           playCountdownBeep(micState.audioContext);
         }
       } else if (msg.type === "text-control:update-line") {
-        setLineEdits((prev) => ({ ...prev, [msg.lineIndex]: msg.text }));
-      } else if (msg.type === "text-control:set-controllers") {
-        setTextControllerUserIds(new Set(msg.targetUserIds));
-      } else if (msg.type === "presence:update") {
+        const patch: ScriptLineOverride = {};
+        if (typeof msg.text === "string") patch.text = msg.text;
+        if (typeof msg.character === "string") patch.character = msg.character;
+        if (typeof msg.start === "number" && Number.isFinite(msg.start)) patch.start = msg.start;
+        applyScriptLinePatch(msg.lineIndex, patch);
+        if (msg.history && typeof msg.history === "object") {
+          pushEditHistory(
+            msg.lineIndex,
+            msg.history.field,
+            String(msg.history.before ?? ""),
+            String(msg.history.after ?? ""),
+            String(msg.history.by || "Usuário")
+          );
+        }
+      } else if (msg.type === "text-control:set-controllers" || msg.type === "text-control:state") {
+        const ids = Array.isArray(msg.targetUserIds) ? msg.targetUserIds : msg.controllerUserIds;
+        setTextControllerUserIds(new Set(ids || []));
+      } else if (msg.type === "presence:update" || msg.type === "presence-sync") {
         setPresenceUsers(msg.users);
       } else if (msg.type === "video:take-status") {
         if (String(msg.targetUserId || "") !== String(user?.id || "")) return;
@@ -758,7 +903,7 @@ export default function RecordingRoom() {
     return () => {
       ws.close();
     };
-  }, [sessionId, micState, user?.id, toast]);
+  }, [sessionId, micState, user?.id, toast, applyScriptLinePatch, pushEditHistory]);
 
   const rebuildScrollAnchors = useCallback(() => {
     const viewport = scriptViewportRef.current;
@@ -872,8 +1017,8 @@ export default function RecordingRoom() {
       }
 
       if (isLooping) {
-        const effectivePreRoll = isLooping ? 2 : preRoll;
-        const effectivePostRoll = isLooping ? 2 : postRoll;
+        const effectivePreRoll = isLooping ? 3 : preRoll;
+        const effectivePostRoll = isLooping ? postRoll : postRoll;
         const range = customLoop || (currentScriptLine ? { start: currentScriptLine.start - effectivePreRoll, end: (currentScriptLine.end || currentScriptLine.start + 2) + effectivePostRoll } : null);
         if (range && time >= range.end) {
           video.currentTime = Math.max(0, range.start);
@@ -1149,6 +1294,20 @@ export default function RecordingRoom() {
       noiseFloor: metrics.noiseFloor,
       sampleRate: result.sampleRate,
     });
+    if (isLooping && customLoop) {
+      const expectedDuration = customLoop.end - Math.max(0, customLoop.start - 3);
+      if (result.durationSeconds + 0.15 < expectedDuration) {
+        toast({
+          title: "Loop incompleto",
+          description: "A última fala do loop não foi gravada por completo.",
+          variant: "destructive",
+        });
+        setRecordingStatus("idle");
+        setLastRecording(null);
+        setQualityMetrics(null);
+        return;
+      }
+    }
     try {
       setIsSaving(true);
       const autoApprove = !hasApproverPresent && !isPrivileged;
@@ -1204,7 +1363,7 @@ export default function RecordingRoom() {
     } finally {
       setIsSaving(false);
     }
-  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id]);
+  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id, isLooping, customLoop]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -1254,17 +1413,27 @@ export default function RecordingRoom() {
       toast({ title: "Inicio selecionado", description: "Clique na fala final do loop." });
     } else if (loopSelectionMode === "selecting-end") {
       const startIndex = loopAnchorIndex ?? index;
-      const startLine = scriptLines[startIndex] || line;
-      const start = Math.min(startLine.start, line.start);
-      const end = Math.max(startLine.end || (startLine.start + 2), line.end || (line.start + 2));
+      const normalizedStartIndex = Math.min(startIndex, index);
+      const normalizedEndIndex = Math.max(startIndex, index);
+      const startLine = scriptLines[normalizedStartIndex] || line;
+      const endLine = scriptLines[normalizedEndIndex] || line;
+      const start = startLine.start;
+      const baseEnd = endLine.end || (endLine.start + 2);
+      const nextLine = scriptLines[normalizedEndIndex + 1];
+      const secondNextLine = scriptLines[normalizedEndIndex + 2];
+      const calculatedPostRoll = nextLine && secondNextLine
+        ? Math.max(0.25, secondNextLine.start - nextLine.start)
+        : 1;
+      const end = baseEnd + calculatedPostRoll;
       setCustomLoop({ start, end });
+      setLoopRangeMeta({ startIndex: normalizedStartIndex, endIndex: normalizedEndIndex });
       setLoopSelectionMode("idle");
       setIsLooping(true);
-      setPreRoll(2);
-      setPostRoll(2);
-      toast({ title: "Loop definido", description: "Trecho selecionado com pre/post-roll de 2 segundos." });
+      setPreRoll(3);
+      setPostRoll(calculatedPostRoll);
+      toast({ title: "Loop definido", description: "Preroll de 3s e posroll adaptativo aplicados." });
       emitVideoEvent("sync-loop", { loopRange: { start, end } });
-      logFeatureAudit("room.loop.defined", { start, end, startLineIndex: startIndex, endLineIndex: index });
+      logFeatureAudit("room.loop.defined", { start, end, startLineIndex: normalizedStartIndex, endLineIndex: normalizedEndIndex });
     } else {
       const video = videoRef.current;
       if (video) {
@@ -1276,10 +1445,11 @@ export default function RecordingRoom() {
   }, [canTextControl, scriptLines, loopSelectionMode, toast, emitVideoEvent, loopAnchorIndex, logFeatureAudit]);
 
   const handleLoopButton = useCallback(async () => {
-    if (loopSelectionMode !== "idle") {
+    if (loopSelectionMode !== "idle" || customLoop) {
       setLoopSelectionMode("idle");
       setIsLooping(false);
       setCustomLoop(null);
+      setLoopRangeMeta(null);
       setLoopAnchorIndex(null);
       setPreRoll(1);
       setPostRoll(1);
@@ -1288,10 +1458,11 @@ export default function RecordingRoom() {
     }
     setLoopSelectionMode("selecting-start");
     setCustomLoop(null);
+    setLoopRangeMeta(null);
     setLoopAnchorIndex(null);
     await logFeatureAudit("room.loop.selection_started");
     toast({ title: "Selecione a primeira fala do loop" });
-  }, [loopSelectionMode, logFeatureAudit, toast]);
+  }, [loopSelectionMode, customLoop, logFeatureAudit, toast]);
 
   const handleDiscard = useCallback(() => {
     setLastRecording(null);
@@ -1299,9 +1470,93 @@ export default function RecordingRoom() {
     setRecordingStatus("idle");
   }, []);
 
+  const startInlineEdit = useCallback((lineIndex: number, field: "character" | "text" | "timecode") => {
+    const line = scriptLines[lineIndex];
+    if (!line) return;
+    const initial = field === "character" ? line.character : field === "text" ? line.text : formatTimecodeByFormat(line.start, "HH:MM:SS", 24);
+    setEditingField({ lineIndex, field });
+    setEditingDraftValue(initial);
+  }, [scriptLines]);
+
+  const cancelInlineEdit = useCallback(() => {
+    setEditingField(null);
+    setEditingDraftValue("");
+  }, []);
+
+  const saveInlineEdit = useCallback(() => {
+    if (!editingField) return;
+    const line = scriptLines[editingField.lineIndex];
+    if (!line) return;
+    const by = String(user?.displayName || user?.fullName || "Usuário");
+    const patch: ScriptLineOverride = {};
+    let before = "";
+    let after = "";
+    if (editingField.field === "character") {
+      before = line.character;
+      after = editingDraftValue.trim();
+      if (!after) {
+        toast({ title: "Nome do personagem inválido", variant: "destructive" });
+        return;
+      }
+      patch.character = after;
+    } else if (editingField.field === "text") {
+      before = line.text;
+      after = editingDraftValue.trim();
+      if (!after) {
+        toast({ title: "Texto da fala inválido", variant: "destructive" });
+        return;
+      }
+      patch.text = after;
+    } else {
+      const candidate = editingDraftValue.trim();
+      if (!/^\d{2}:[0-5]\d:[0-5]\d$/.test(candidate)) {
+        toast({ title: "Timecode inválido", description: "Use o formato HH:MM:SS.", variant: "destructive" });
+        return;
+      }
+      before = formatTimecodeByFormat(line.start, "HH:MM:SS", 24);
+      after = candidate;
+      patch.start = parseTimecode(candidate);
+    }
+    applyScriptLinePatch(editingField.lineIndex, patch);
+    pushEditHistory(editingField.lineIndex, editingField.field, before, after, by);
+    emitTextControlEvent("text-control:update-line", {
+      lineIndex: editingField.lineIndex,
+      ...patch,
+      history: { field: editingField.field, before, after, by },
+    });
+    setEditingField(null);
+    setEditingDraftValue("");
+    toast({ title: "Alteração salva", description: `${editingField.field} atualizado com sucesso.` });
+  }, [editingField, scriptLines, user?.displayName, user?.fullName, editingDraftValue, toast, applyScriptLinePatch, pushEditHistory, emitTextControlEvent]);
+
+  const toggleUserTextControl = useCallback((targetUserId: string) => {
+    if (!canReleaseText) return;
+    const hasPermission = textControllerUserIds.has(targetUserId);
+    emitTextControlEvent(hasPermission ? "text-control:revoke-controller" : "text-control:grant-controller", { targetUserId });
+  }, [canReleaseText, textControllerUserIds, emitTextControlEvent]);
+
+  const getTakeStreamUrl = useCallback((take: any) => {
+    const rawUrl = String(take?.audioUrl || "").trim();
+    if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+    return `/api/takes/${take.id}/stream`;
+  }, []);
+
+  const validateTakeStreamLink = useCallback(async (take: any) => {
+    const streamUrl = getTakeStreamUrl(take);
+    const response = await fetch(streamUrl, {
+      credentials: "include",
+      headers: { Range: "bytes=0-1" },
+    });
+    if (!response.ok) {
+      throw new Error(`Arquivo inacessível (${response.status})`);
+    }
+    return streamUrl;
+  }, [getTakeStreamUrl]);
+
   const handleDownloadTake = useCallback(async (take: any) => {
     try {
-      const response = await fetch(`/api/takes/${take.id}/stream`, {
+      const streamUrl = await validateTakeStreamLink(take);
+      const response = await fetch(streamUrl, {
         credentials: "include",
       });
       if (!response.ok) {
@@ -1317,9 +1572,9 @@ export default function RecordingRoom() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     } catch (err) {
-      toast({ title: "Erro ao baixar take", variant: "destructive" });
+      toast({ title: "Erro ao baixar take", description: String((err as any)?.message || err), variant: "destructive" });
     }
-  }, [toast]);
+  }, [toast, validateTakeStreamLink]);
 
   const handleSaveProfile = (profile: RecordingProfile) => {
     setRecordingProfile(profile);
@@ -1504,7 +1759,13 @@ export default function RecordingRoom() {
               <audio ref={takePreviewAudioRef} preload="none" />
               <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
                 {pendingApprovalTakes.map((take: any) => (
-                  <div key={take.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-background/75 border border-border/70">
+                  <div
+                    key={take.id}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2 rounded-lg bg-background/75 border border-border/70 transition-all duration-300",
+                      optimisticRemovingTakeIds.has(String(take.id)) && "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none"
+                    )}
+                  >
                     <button
                       onClick={() => {
                         const audio = takePreviewAudioRef.current;
@@ -1558,6 +1819,7 @@ export default function RecordingRoom() {
                         }}
                         className="px-2.5 h-8 rounded-lg text-xs font-medium bg-destructive/15 text-destructive hover:bg-destructive/25 transition-colors"
                         title="Descartar take"
+                        disabled={optimisticRemovingTakeIds.has(String(take.id))}
                       >
                         Descartar
                       </button>
@@ -1575,6 +1837,66 @@ export default function RecordingRoom() {
                 {pendingApprovalTakes.length === 0 && (
                   <div className="text-sm text-center py-10 text-muted-foreground">
                     Nenhum take pendente de aprovação
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {textControlPopupOpen && canReleaseText && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
+          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[620px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-foreground">Liberar Texto</span>
+                <span className="text-[10px] px-2 py-1 rounded-full border bg-muted/60 text-muted-foreground">
+                  {textControllerUserIds.size} autorizados
+                </span>
+              </div>
+              <button onClick={() => setTextControlPopupOpen(false)} className="transition-colors text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-6 py-4 max-h-[420px] overflow-y-auto custom-scrollbar">
+              <div className="grid grid-cols-12 text-[10px] uppercase text-muted-foreground tracking-wider pb-2 border-b border-border/60">
+                <span className="col-span-5">Usuário</span>
+                <span className="col-span-3">Perfil</span>
+                <span className="col-span-2">Status</span>
+                <span className="col-span-2 text-right">Permissão</span>
+              </div>
+              <div className="space-y-1 mt-2">
+                {textControlCandidates.map((presence: any) => {
+                  const allowed = textControllerUserIds.has(String(presence.userId || ""));
+                  return (
+                    <div key={presence.userId} className="grid grid-cols-12 items-center text-xs py-2 px-2 rounded-md hover:bg-muted/40">
+                      <span className="col-span-5 truncate text-foreground">{presence.name || presence.userId}</span>
+                      <span className="col-span-3 text-muted-foreground">{normalizeRoomRole(presence.role)}</span>
+                      <span className="col-span-2 flex items-center gap-1 text-emerald-500">
+                        <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                        online
+                      </span>
+                      <div className="col-span-2 flex justify-end">
+                        <button
+                          onClick={() => toggleUserTextControl(String(presence.userId || ""))}
+                          className={cn(
+                            "h-7 px-2 rounded-md text-[11px] border transition-colors",
+                            allowed
+                              ? "bg-destructive/15 text-destructive border-destructive/30 hover:bg-destructive/25"
+                              : "bg-primary/15 text-primary border-primary/30 hover:bg-primary/25"
+                          )}
+                          data-testid={`button-toggle-text-control-${presence.userId}`}
+                        >
+                          {allowed ? "Revogar" : "Liberar"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {textControlCandidates.length === 0 && (
+                  <div className="text-sm text-center py-10 text-muted-foreground">
+                    Nenhum dublador ou aluno online no momento
                   </div>
                 )}
               </div>
@@ -1602,6 +1924,19 @@ export default function RecordingRoom() {
                 <X className="w-4 h-4" />
               </button>
             </div>
+            {canViewOnlineUsers && (
+              <div className="px-6 pt-3">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="text-emerald-500 font-medium">Online agora:</span>
+                  {onlineRosterForCurrentRole.map((presence: any) => (
+                    <span key={presence.userId} className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      {presence.name || presence.userId}
+                    </span>
+                  ))}
+                  {onlineRosterForCurrentRole.length === 0 && <span>Nenhum usuário online</span>}
+                </div>
+              </div>
+            )}
             <div className="px-6 py-4 max-h-[420px] overflow-y-auto custom-scrollbar">
               <div className="grid grid-cols-12 text-[10px] uppercase text-muted-foreground tracking-wider pb-2 border-b border-border/60">
                 <span className="col-span-2">Linha</span>
@@ -1613,49 +1948,59 @@ export default function RecordingRoom() {
               </div>
               <div className="space-y-1 mt-2">
                 {scopedRecordings.map((take: any) => (
-                  <div key={take.id} className="grid grid-cols-12 items-center text-xs py-2 px-2 rounded-md hover:bg-muted/40">
-                    <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
-                    <span className="col-span-3 truncate">{take.characterName || "-"}</span>
-                    <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
-                    <span className={cn("col-span-2", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
-                      {take.status === "approved" ? "Aprovado" : "Pendente"}
-                    </span>
-                    <span className="col-span-1 text-right font-mono text-muted-foreground">
-                      {take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : "-"}
-                    </span>
-                    <div className="col-span-2 flex items-center justify-end gap-1.5">
-                      <button
-                        onClick={async () => {
-                          const audio = recordingsPreviewAudioRef.current;
-                          if (!audio) return;
-                          if (recordingsPreviewId === take.id && !audio.paused) {
-                            audio.pause();
-                            setRecordingsPreviewId(null);
-                            return;
-                          }
-                          audio.src = `/api/takes/${take.id}/stream`;
-                          try {
-                            await audio.play();
-                            setRecordingsPreviewId(take.id);
-                          } catch {
-                            toast({ title: "Erro ao reproduzir take", variant: "destructive" });
-                          }
-                        }}
-                        className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
-                        title="Reproduzir take"
-                        data-testid={`button-play-recording-${take.id}`}
-                      >
-                        {recordingsPreviewId === take.id ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
-                      </button>
-                      <button
-                        onClick={() => handleDownloadTake(take)}
-                        className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
-                        title="Baixar take"
-                        data-testid={`button-download-recording-${take.id}`}
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                      </button>
+                  <div key={take.id} className="rounded-md hover:bg-muted/40 px-2 py-2">
+                    <div className="grid grid-cols-12 items-center text-xs">
+                      <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
+                      <span className="col-span-3 truncate">{take.characterName || "-"}</span>
+                      <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
+                      <span className={cn("col-span-2", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
+                        {take.status === "approved" ? "Aprovado" : "Pendente"}
+                      </span>
+                      <span className="col-span-1 text-right font-mono text-muted-foreground">
+                        {take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : "-"}
+                      </span>
+                      <div className="col-span-2 flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={async () => {
+                            const audio = recordingsPreviewAudioRef.current;
+                            if (!audio) return;
+                            if (recordingsPreviewId === take.id && !audio.paused) {
+                              audio.pause();
+                              setRecordingsPreviewId(null);
+                              setRecordingsPlayerOpenId(null);
+                              return;
+                            }
+                            try {
+                              const streamUrl = await validateTakeStreamLink(take);
+                              audio.src = streamUrl;
+                              await audio.play();
+                              setRecordingsPreviewId(take.id);
+                              setRecordingsPlayerOpenId(take.id);
+                            } catch (err) {
+                              toast({ title: "Erro ao reproduzir take", description: String((err as any)?.message || err), variant: "destructive" });
+                            }
+                          }}
+                          className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
+                          title="Reproduzir take"
+                          data-testid={`button-play-recording-${take.id}`}
+                        >
+                          {recordingsPreviewId === take.id ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+                        </button>
+                        <button
+                          onClick={() => handleDownloadTake(take)}
+                          className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
+                          title="Baixar take"
+                          data-testid={`button-download-recording-${take.id}`}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
+                    {recordingsPlayerOpenId === take.id && (
+                      <div className="mt-2 pl-[16.8%]">
+                        <audio controls className="w-full h-8" src={getTakeStreamUrl(take)} preload="none" />
+                      </div>
+                    )}
                   </div>
                 ))}
                 {scopedRecordings.length === 0 && (
@@ -1706,7 +2051,10 @@ export default function RecordingRoom() {
       <audio
         ref={recordingsPreviewAudioRef}
         preload="none"
-        onEnded={() => setRecordingsPreviewId(null)}
+        onEnded={() => {
+          setRecordingsPreviewId(null);
+          setRecordingsPlayerOpenId(null);
+        }}
       />
 
       <header className="shrink-0 flex items-center justify-between px-3 h-12 sm:h-14 relative z-20" style={{ background: "hsl(var(--background) / 0.90)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid hsl(var(--border) / 0.9)" }}>
@@ -1767,6 +2115,15 @@ export default function RecordingRoom() {
               <Circle className="w-2 h-2 fill-current" /> <span className="hidden xs:inline">REC</span>
             </div>
           )}
+          {canViewOnlineUsers && !isMobile && (
+            <div
+              className="h-7 px-2 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 flex items-center gap-1.5"
+              title={onlineRosterForCurrentRole.map((presence: any) => presence.name || presence.userId).join(", ")}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>{onlineRosterForCurrentRole.length} online</span>
+            </div>
+          )}
           
           {isMobile ? (
             <button
@@ -1796,6 +2153,16 @@ export default function RecordingRoom() {
                 <ListMusic className="w-3.5 h-3.5" />
                 Gravações
               </button>
+              {canReleaseText && (
+                <button
+                  onClick={() => setTextControlPopupOpen(true)}
+                  className="h-7 px-2 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-300 hover:bg-indigo-500/20 flex items-center gap-1"
+                  data-testid="button-room-release-text"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  Liberar Texto
+                </button>
+              )}
               <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
                 <button
                   onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); }}
@@ -1942,6 +2309,18 @@ export default function RecordingRoom() {
                       className="absolute top-0 bottom-0 rounded-full bg-primary"
                       style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }}
                     />
+                    {customLoop && videoDuration > 0 && (
+                      <>
+                        <div
+                          className="absolute -top-1.5 h-4 w-[2px] bg-indigo-300/90"
+                          style={{ left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%` }}
+                        />
+                        <div
+                          className="absolute -top-1.5 h-4 w-[2px] bg-indigo-300/90"
+                          style={{ left: `${Math.max(0, Math.min(100, (customLoop.end / videoDuration) * 100))}%` }}
+                        />
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -2004,7 +2383,7 @@ export default function RecordingRoom() {
                 <div className="absolute top-3 left-3 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/40 px-3 flex items-center text-[11px] text-indigo-100 z-30">
                   {loopSelectionMode === "selecting-start" && "Loop: selecione a primeira fala"}
                   {loopSelectionMode === "selecting-end" && "Loop: selecione a última fala"}
-                  {loopSelectionMode === "idle" && customLoop && `Loop ativo ${formatLiveTimecode(customLoop.start)} - ${formatLiveTimecode(customLoop.end)}`}
+                  {loopSelectionMode === "idle" && customLoop && `Loop ativo ${formatLiveTimecode(customLoop.start)} - ${formatLiveTimecode(customLoop.end)}${loopRangeMeta ? ` · Linhas ${loopRangeMeta.startIndex + 1}-${loopRangeMeta.endIndex + 1}` : ""}`}
                 </div>
               )}
             </div>
@@ -2089,8 +2468,75 @@ export default function RecordingRoom() {
                       {isDone && <CheckCircle2 className="w-5 h-5 ml-auto text-emerald-500" />}
                     </div>
                     <p className={cn("text-[22px] leading-relaxed", isActive ? "text-foreground font-medium" : "text-muted-foreground")}>
-                      {lineEdits[i] ?? line.text}
+                      {line.text}
                     </p>
+                    {canTextControl && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            startInlineEdit(i, "character");
+                          }}
+                          className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                          Personagem
+                        </button>
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            startInlineEdit(i, "text");
+                          }}
+                          className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                          Fala
+                        </button>
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            startInlineEdit(i, "timecode");
+                          }}
+                          className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                          Timecode
+                        </button>
+                      </div>
+                    )}
+                    {editingField?.lineIndex === i && (
+                      <div className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3" onClick={(event) => event.stopPropagation()}>
+                        {editingField.field === "text" ? (
+                          <textarea
+                            value={editingDraftValue}
+                            onChange={(event) => setEditingDraftValue(event.target.value)}
+                            className="w-full min-h-20 rounded-md border border-border/70 bg-background px-3 py-2 text-sm text-foreground outline-none"
+                          />
+                        ) : (
+                          <input
+                            value={editingDraftValue}
+                            onChange={(event) => setEditingDraftValue(event.target.value)}
+                            className="w-full h-9 rounded-md border border-border/70 bg-background px-3 text-sm text-foreground outline-none"
+                          />
+                        )}
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          <button
+                            onClick={cancelInlineEdit}
+                            className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            onClick={saveInlineEdit}
+                            className="h-7 px-2 rounded-md bg-primary/20 text-[11px] text-primary hover:bg-primary/30"
+                          >
+                            Salvar
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {lineEditHistory[i]?.[0] && (
+                      <div className="mt-2 text-[11px] text-muted-foreground">
+                        Última alteração: {lineEditHistory[i][0].field} por {lineEditHistory[i][0].by}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2154,6 +2600,23 @@ export default function RecordingRoom() {
                         </div>
                         <ChevronRight className="w-5 h-5 text-white/20" />
                       </button>
+                      {canReleaseText && (
+                        <button
+                          onClick={() => { setTextControlPopupOpen(true); setMobileMenuOpen(false); }}
+                          className="w-full flex items-center justify-between p-5 rounded-2xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-all min-h-[56px]"
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-300">
+                              <Edit3 className="w-5 h-5" />
+                            </div>
+                            <div className="text-left">
+                              <div className="font-bold text-sm text-white">Liberar Texto</div>
+                              <div className="text-[11px] text-white/40 uppercase tracking-wider">Permissões em tempo real</div>
+                            </div>
+                          </div>
+                          <ChevronRight className="w-5 h-5 text-white/20" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </Drawer.Content>
@@ -2201,7 +2664,7 @@ export default function RecordingRoom() {
                               {isDone && <CheckCircle2 className="w-4 h-4 ml-auto text-emerald-500" />}
                             </div>
                             <p className={cn("text-[17px] leading-relaxed", isActive ? "text-white font-medium" : "text-white/50")}>
-                              {lineEdits[i] ?? line.text}
+                              {line.text}
                             </p>
                           </div>
                         );

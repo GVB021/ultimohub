@@ -1,4 +1,5 @@
-import { Switch, Route, Redirect, Router as WouterRouter } from "wouter";
+import { Switch, Route, Redirect, Router as WouterRouter, useLocation } from "wouter";
+import { AnimatePresence, motion } from "framer-motion";
 import { memoryHook, memorySearchHook } from "@studio/lib/memory-router";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -22,6 +23,7 @@ const Sessions = lazy(() => import("@studio/pages/sessions"));
 const RecordingRoom = lazy(() => import("@studio/pages/room").then(module => ({ default: module.default })));
 const Staff = lazy(() => import("@studio/pages/staff"));
 const Admin = lazy(() => import("@studio/pages/admin"));
+const StudioManagementPage = lazy(() => import("@studio/pages/studio-management"));
 const Members = lazy(() => import("@studio/pages/members"));
 const StudioAdmin = lazy(() => import("@studio/pages/studio-admin"));
 const Takes = lazy(() => import("@studio/pages/takes"));
@@ -106,65 +108,82 @@ function LandingRoute() {
 }
 
 function Router() {
+  const [location] = useLocation();
+
   return (
     <Suspense fallback={
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
     }>
-      <Switch>
-        <Route path="/hub-dub" component={LandingRoute} />
-        <Route path="/hub-dub/login" component={Login} />
-        <Route path="/hub-dub/secretaria/login" component={SecretariaLogin} />
-        <Route path="/hub-dub/studios" component={StudioSelectRoute} />
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={location}
+          className="min-h-screen w-full"
+          initial={{ opacity: 0, filter: "blur(4px)" }}
+          animate={{ opacity: 1, filter: "blur(0px)" }}
+          exit={{ opacity: 0, filter: "blur(3px)" }}
+          transition={{ duration: 0.4, ease: "easeInOut" }}
+        >
+          <Switch location={location}>
+            <Route path="/hub-dub" component={LandingRoute} />
+            <Route path="/hub-dub/login" component={Login} />
+            <Route path="/hub-dub/secretaria/login" component={SecretariaLogin} />
+            <Route path="/hub-dub/studios" component={StudioSelectRoute} />
 
-        <Route path="/hub-dub/admin">
-          {() => <ProtectedRoute component={Admin} />}
-        </Route>
+            <Route path="/hub-dub/admin/studios/:studioId/management">
+              {() => <ProtectedRoute component={StudioManagementPage} />}
+            </Route>
 
-        <Route path="/hub-dub/profile">
-          {() => <ProtectedRoute component={Profile} />}
-        </Route>
-        <Route path="/hub-dub/daw">
-          <Redirect to="/hub-dub/studios" replace />
-        </Route>
+            <Route path="/hub-dub/admin">
+              {() => <ProtectedRoute component={Admin} />}
+            </Route>
 
-        <Route path="/hub-dub/studio/:studioId/dashboard">
-          {params => <ProtectedRoute component={Dashboard} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/productions">
-          {params => <ProtectedRoute component={Productions} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/sessions">
-          {params => <ProtectedRoute component={Sessions} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/staff">
-          {params => <ProtectedRoute component={Staff} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/members">
-          {params => <ProtectedRoute component={Members} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/notifications">
-          {params => <Redirect to={`/hub-dub/studio/${params.studioId}/dashboard`} replace />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/takes">
-          {params => <ProtectedRoute component={Takes} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/tutorial-audio">
-          {params => <ProtectedRoute component={TutorialAudio} requireStudio params={params} />}
-        </Route>
-        <Route path="/hub-dub/studio/:studioId/admin">
-          {params => <ProtectedRoute component={StudioAdmin} requireStudio params={params} />}
-        </Route>
+            <Route path="/hub-dub/profile">
+              {() => <ProtectedRoute component={Profile} />}
+            </Route>
+            <Route path="/hub-dub/daw">
+              <Redirect to="/hub-dub/studios" replace />
+            </Route>
 
-        <Route path="/hub-dub/studio/:studioId/sessions/:sessionId/room">
-          {params => <ProtectedRoute component={RecordingRoom} params={params} />}
-        </Route>
+            <Route path="/hub-dub/studio/:studioId/dashboard">
+              {params => <ProtectedRoute component={Dashboard} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/productions">
+              {params => <ProtectedRoute component={Productions} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/sessions">
+              {params => <ProtectedRoute component={Sessions} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/staff">
+              {params => <ProtectedRoute component={Staff} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/members">
+              {params => <ProtectedRoute component={Members} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/notifications">
+              {params => <Redirect to={`/hub-dub/studio/${params.studioId}/dashboard`} replace />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/takes">
+              {params => <ProtectedRoute component={Takes} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/tutorial-audio">
+              {params => <ProtectedRoute component={TutorialAudio} requireStudio params={params} />}
+            </Route>
+            <Route path="/hub-dub/studio/:studioId/admin">
+              {params => <ProtectedRoute component={StudioAdmin} requireStudio params={params} />}
+            </Route>
 
-        <Route path="/hub-dub/:rest*">
-          <NotFound />
-        </Route>
-      </Switch>
+            <Route path="/hub-dub/studio/:studioId/sessions/:sessionId/room">
+              {params => <ProtectedRoute component={RecordingRoom} params={params} />}
+            </Route>
+
+            <Route path="/hub-dub/:rest*">
+              <NotFound />
+            </Route>
+          </Switch>
+        </motion.div>
+      </AnimatePresence>
     </Suspense>
   );
 }

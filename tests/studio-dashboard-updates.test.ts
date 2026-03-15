@@ -70,3 +70,33 @@ test("páginas críticas não exibem rótulos de retorno legado", () => {
   assert.equal(room.includes("Voltar para Sessoes"), false);
 });
 
+test("roteador usa histórico do navegador para manter deep linking em refresh", () => {
+  const studioRouterPath = path.resolve(process.cwd(), "client/src/studio/lib/memory-router.ts");
+  const appPath = path.resolve(process.cwd(), "client/src/studio/App.tsx");
+  const studioRouter = fs.readFileSync(studioRouterPath, "utf8");
+  const app = fs.readFileSync(appPath, "utf8");
+  assert.equal(studioRouter.includes("useSyncExternalStore"), true);
+  assert.equal(studioRouter.includes("window.history.pushState"), true);
+  assert.equal(studioRouter.includes("window.history.replaceState"), true);
+  assert.equal(studioRouter.includes("window.addEventListener(\"popstate\""), true);
+  assert.equal(app.includes("<Switch location={location}>"), true);
+});
+
+test("transição de páginas aplica blur progressivo e fade com espera", () => {
+  const appPath = path.resolve(process.cwd(), "client/src/studio/App.tsx");
+  const app = fs.readFileSync(appPath, "utf8");
+  assert.equal(app.includes("<AnimatePresence mode=\"wait\""), true);
+  assert.equal(app.includes("initial={{ opacity: 0, filter: \"blur(4px)\" }}"), true);
+  assert.equal(app.includes("animate={{ opacity: 1, filter: \"blur(0px)\" }}"), true);
+  assert.equal(app.includes("exit={{ opacity: 0, filter: \"blur(3px)\" }}"), true);
+  assert.equal(app.includes("duration: 0.4"), true);
+});
+
+test("servidor entrega index.html para rotas SPA sem capturar API", () => {
+  const staticPath = path.resolve(process.cwd(), "server/static.ts");
+  const staticCode = fs.readFileSync(staticPath, "utf8");
+  assert.equal(staticCode.includes("app.get(\"/{*path}\""), true);
+  assert.equal(staticCode.includes("req.path.startsWith(\"/api/\")"), true);
+  assert.equal(staticCode.includes("req.path.startsWith(\"/ws/\")"), true);
+  assert.equal(staticCode.includes("accept.includes(\"text/html\")"), true);
+});

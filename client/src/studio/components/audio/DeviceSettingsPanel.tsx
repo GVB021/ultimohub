@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { X, Mic, Volume2, Sliders, Check } from "lucide-react";
+import { Mic, Volume2, Sliders, Check } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@studio/components/ui/dialog";
 import { Label } from "@studio/components/ui/label";
 import { Slider } from "@studio/components/ui/slider";
@@ -48,7 +48,7 @@ export function DeviceSettingsPanel({
 
   return (
     <Dialog open={open} onOpenChange={(val) => !val && onClose()}>
-      <DialogContent className="sm:max-w-[425px] bg-zinc-950 border-zinc-800 text-white">
+      <DialogContent className="sm:max-w-[425px] bg-card border-border text-foreground">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sliders className="w-5 h-5 text-primary" />
@@ -58,15 +58,15 @@ export function DeviceSettingsPanel({
 
         <div className="grid gap-6 py-4">
           <div className="grid gap-2">
-            <Label htmlFor="mic-select" className="text-zinc-400">Microfone</Label>
+            <Label htmlFor="mic-select" className="text-foreground">Microfone</Label>
             <Select
               value={settings.inputDeviceId || "default"}
               onValueChange={(val) => onSettingsChange({ ...settings, inputDeviceId: val })}
             >
-              <SelectTrigger id="mic-select" className="bg-zinc-900 border-zinc-800">
+              <SelectTrigger id="mic-select" className="bg-background border-border text-foreground">
                 <SelectValue placeholder="Selecione o microfone" />
               </SelectTrigger>
-              <SelectContent className="bg-zinc-900 border-zinc-800 text-white">
+              <SelectContent className="bg-popover border-border text-popover-foreground">
                 <SelectItem value="default">Padrão do Sistema</SelectItem>
                 {devices.map((device) => (
                   <SelectItem key={device.deviceId} value={device.deviceId}>
@@ -79,7 +79,7 @@ export function DeviceSettingsPanel({
 
           <div className="grid gap-4">
             <div className="flex items-center justify-between">
-              <Label className="text-zinc-400 flex items-center gap-2">
+              <Label className="text-foreground flex items-center gap-2">
                 <Mic className="w-4 h-4" />
                 Ganho de Entrada
               </Label>
@@ -99,7 +99,7 @@ export function DeviceSettingsPanel({
 
           <div className="grid gap-4">
             <div className="flex items-center justify-between">
-              <Label className="text-zinc-400 flex items-center gap-2">
+              <Label className="text-foreground flex items-center gap-2">
                 <Volume2 className="w-4 h-4" />
                 Volume do Monitor
               </Label>
@@ -118,14 +118,14 @@ export function DeviceSettingsPanel({
           </div>
 
           <div className="grid gap-2">
-            <Label className="text-zinc-400">Modo de Captura</Label>
+            <Label className="text-foreground">Modo de Captura</Label>
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => onSettingsChange({ ...settings, voiceCaptureMode: "original" })}
                 className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs transition-all ${
                   settings.voiceCaptureMode === "original"
                     ? "bg-primary/20 border-primary text-primary"
-                    : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700"
+                    : "bg-muted/60 border-border text-foreground hover:bg-muted"
                 }`}
               >
                 {settings.voiceCaptureMode === "original" && <Check className="w-3 h-3" />}
@@ -136,7 +136,7 @@ export function DeviceSettingsPanel({
                 className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs transition-all ${
                   settings.voiceCaptureMode === "studio"
                     ? "bg-primary/20 border-primary text-primary"
-                    : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700"
+                    : "bg-muted/60 border-border text-foreground hover:bg-muted"
                 }`}
               >
                 {settings.voiceCaptureMode === "studio" && <Check className="w-3 h-3" />}

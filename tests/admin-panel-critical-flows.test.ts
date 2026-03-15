@@ -6,6 +6,7 @@ import { join } from "node:path";
 const root = process.cwd();
 const routesPath = join(root, "server/routes.ts");
 const adminPath = join(root, "client/src/studio/pages/admin.tsx");
+const managementPagePath = join(root, "client/src/studio/pages/studio-management.tsx");
 
 test("backend adiciona gestao de sessoes web e logout forcado", () => {
   const routes = readFileSync(routesPath, "utf8");
@@ -26,15 +27,13 @@ test("backend protege super administrador contra remocao de privilegio", () => {
   assert.match(routes, /Somente o master admin pode conceder platform_owner/);
 });
 
-test("backend cobre estudo com configuracao, alocacao, fila e progresso", () => {
+test("backend cobre página dedicada de gestão com acesso exclusivo por email", () => {
   const routes = readFileSync(routesPath, "utf8");
-  assert.match(routes, /\/api\/admin\/studios\/:id\/study-config/);
-  assert.match(routes, /\/api\/admin\/studios\/:id\/study-allocation/);
-  assert.match(routes, /\/api\/admin\/studios\/:id\/study-allocate\/:userId/);
-  assert.match(routes, /\/api\/admin\/studios\/:id\/study-unallocate\/:userId/);
-  assert.match(routes, /\/api\/admin\/studios\/:id\/study-progress\/:userId/);
-  assert.match(routes, /study_waitlist/);
-  assert.match(routes, /study_assigned/);
+  assert.match(routes, /isStudioManagementEmail/);
+  assert.match(routes, /\/api\/admin\/studios\/:id\/management-settings/);
+  assert.match(routes, /Acesso negado/);
+  assert.match(routes, /UPDATE_STUDIO_MANAGEMENT_SETTINGS/);
+  assert.match(routes, /z\.number\(\)\.int\(\)\.positive\(\)/);
 });
 
 test("frontend admin expõe exportacao, auditoria de usuario e gestao de sessoes web", () => {
@@ -46,11 +45,21 @@ test("frontend admin expõe exportacao, auditoria de usuario e gestao de sessoes
   assert.match(admin, /button-cleanup-expired-sessions/);
 });
 
-test("frontend admin inclui gerenciamento de estudo por estúdio", () => {
+test("frontend admin redireciona gestão de estúdio para página dedicada", () => {
   const admin = readFileSync(adminPath, "utf8");
   assert.match(admin, /button-study-manager-/);
-  assert.match(admin, /button-save-study-config/);
-  assert.match(admin, /button-study-allocate/);
-  assert.match(admin, /button-study-unallocate/);
-  assert.match(admin, /button-study-progress/);
+  assert.match(admin, /\/hub-dub\/admin\/studios\/\$\{studio\.id\}\/management/);
+  assert.doesNotMatch(admin, /button-study-allocate/);
+  assert.doesNotMatch(admin, /button-study-unallocate/);
+});
+
+test("página de gestão valida campos positivos e bloqueia usuários não autorizados", () => {
+  const managementPage = readFileSync(managementPagePath, "utf8");
+  assert.match(managementPage, /AUTHORIZED_EMAIL = "borbaggabriel@gmail.com"/);
+  assert.match(managementPage, /Acesso Negado/);
+  assert.match(managementPage, /Campo obrigatório/);
+  assert.match(managementPage, /Use um número inteiro positivo/);
+  assert.match(managementPage, /min=\{1\}/);
+  assert.match(managementPage, /input-management-\$\{field\.key\}/);
+  assert.match(managementPage, /button-save-management-settings/);
 });
