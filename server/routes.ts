@@ -230,6 +230,10 @@ async function canManageSessionTakes(user: any, sessionId: string, studioId: str
   return self.role === "director" || self.role === "diretor" || self.role === "studio_admin";
 }
 
+function studioTimecodeSettingKey(studioId: string): string {
+  return `STUDIO_TIMECODE_FORMAT_${studioId}`;
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
   // NOTIFICATIONS
@@ -826,6 +830,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.get("/api/studios/:studioId/timecode-format", requireAuth, requireStudioAccess, async (req, res) => {
+    const key = studioTimecodeSettingKey(req.params.studioId);
+    const value = await storage.getSetting(key);
+    const allowed = new Set(["HH:MM:SS", "HH:MM:SS:MMM", "HH:MM:SS:FF"]);
+    const format = value && allowed.has(value) ? value : "HH:MM:SS";
+    res.status(200).json({ format });
+  });
+
+  app.put("/api/studios/:studioId/timecode-format", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
+    try {
+      const payload = z.object({
+        format: z.enum(["HH:MM:SS", "HH:MM:SS:MMM", "HH:MM:SS:FF"]),
+      }).parse(req.body);
+      const key = studioTimecodeSettingKey(req.params.studioId);
+      await storage.upsertSetting(key, payload.format);
+      await storage.createAuditLog({
+        userId: (req as any).user?.id || null,
+        action: "studio.timecode_format.updated",
+        details: JSON.stringify({ studioId: req.params.studioId, format: payload.format }),
+      });
+      res.status(200).json({ ok: true, format: payload.format });
+    } catch (err) {
+      res.status(400).json({ message: "Formato de timecode inválido" });
+    }
+  });
+
   // SESSION PARTICIPANTS
   app.get("/api/sessions/:sessionId/participants", requireAuth, async (req, res) => {
     const session = await verifySessionAccess(req, res, req.params.sessionId);
@@ -846,6 +876,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(201).json(participant);
     } catch (err) {
       res.status(400).json({ message: "Dados invalidos" });
+    }
+  });
+
+  app.post("/api/sessions/:sessionId/audit-events", requireAuth, async (req, res) => {
+    try {
+      const session = await verifySessionAccess(req, res, req.params.sessionId);
+      if (!session) return;
+      const payload = z.object({
+        action: z.string().min(3).max(120),
+        details: z.string().max(5000).optional(),
+      }).parse(req.body);
+      await storage.createAuditLog({
+        userId: (req as any).user?.id || null,
+        action: payload.action,
+        details: payload.details || JSON.stringify({ sessionId: req.params.sessionId }),
+      });
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ message: "Evento de auditoria inválido" });
     }
   });
 

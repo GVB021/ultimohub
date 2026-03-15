@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch } from "@studio/lib/auth-fetch";
 import {
   Users, CheckCircle2, XCircle, Loader2, UserPlus, Pencil,
-  BarChart3, Film, Calendar, Mic2, Shield, Trash2, Download
+  BarChart3, Film, Calendar, Mic2, Shield, Trash2, Download, Settings
 } from "lucide-react";
 import { Button } from "@studio/components/ui/button";
 import { Badge } from "@studio/components/ui/badge";
@@ -46,7 +46,8 @@ const SESSION_STATUSES = [
   { value: "cancelled", label: "Cancelada" },
 ];
 
-type AdminTab = "overview" | "pending" | "members" | "productions" | "sessions" | "takes";
+type AdminTab = "overview" | "pending" | "members" | "productions" | "sessions" | "takes" | "settings";
+type TimecodeFormat = "HH:MM:SS" | "HH:MM:SS:MMM" | "HH:MM:SS:FF";
 
 const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }) {
   const queryClient = useQueryClient();
@@ -104,6 +105,28 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
     queryKey: ["/api/studios", studioId, "takes-grouped"],
     queryFn: () => authFetch(`/api/studios/${studioId}/takes/grouped`),
     enabled: activeTab === "takes",
+  });
+
+  const { data: timecodeSettings, isLoading: timecodeLoading } = useQuery<{ format: TimecodeFormat }>({
+    queryKey: ["/api/studios", studioId, "timecode-format"],
+    queryFn: () => authFetch(`/api/studios/${studioId}/timecode-format`),
+    enabled: activeTab === "settings",
+  });
+
+  const updateTimecodeMutation = useMutation({
+    mutationFn: async (format: TimecodeFormat) => {
+      return authFetch(`/api/studios/${studioId}/timecode-format`, {
+        method: "PUT",
+        body: JSON.stringify({ format }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/studios", studioId, "timecode-format"] });
+      toast({ title: "Formato de timecode atualizado" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Falha ao salvar timecode", description: err?.message, variant: "destructive" });
+    },
   });
 
   const approveMutation = useMutation({
@@ -289,6 +312,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
     { key: "productions", label: "Producoes", icon: Film, count: productions?.length || 0 },
     { key: "sessions", label: "Sessoes", icon: Calendar, count: sessions?.length || 0 },
     { key: "takes", label: "Takes de Audio", icon: Mic2 },
+    { key: "settings", label: "Configuracoes", icon: Settings },
   ];
 
   return (
@@ -661,6 +685,42 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
               ) : (
                 <EmptyState icon={<Mic2 className="w-5 h-5" />} title="Nenhum take" description="Ainda nao ha takes gravados neste estudio." />
               )}
+            </div>
+          )}
+
+          {activeTab === "settings" && (
+            <div className="space-y-4 page-enter">
+              <div className="flex items-center gap-2 mb-2">
+                <Settings className="w-4 h-4 text-primary" />
+                <h3 className="text-sm font-semibold text-foreground">Configuração de Timecode</h3>
+              </div>
+              <div className="vhub-card p-5 space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Defina o formato padrão de timecode usado no RecordingRoom deste estúdio.
+                </p>
+                {timecodeLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Carregando configuração
+                  </div>
+                ) : (
+                  <div className="max-w-sm">
+                    <Select
+                      value={timecodeSettings?.format || "HH:MM:SS"}
+                      onValueChange={(value) => updateTimecodeMutation.mutate(value as TimecodeFormat)}
+                    >
+                      <SelectTrigger data-testid="select-timecode-format">
+                        <SelectValue placeholder="Selecione o formato de timecode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="HH:MM:SS">00:00:00 (HH:MM:SS)</SelectItem>
+                        <SelectItem value="HH:MM:SS:MMM">00:00:00:000 (HH:MM:SS:MMM)</SelectItem>
+                        <SelectItem value="HH:MM:SS:FF">00:00:00:00 (HH:MM:SS:FF)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

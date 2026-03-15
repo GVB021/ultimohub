@@ -60,6 +60,29 @@ export function formatTimecode(seconds: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+export type TimecodeFormat = "HH:MM:SS" | "HH:MM:SS:MMM" | "HH:MM:SS:FF";
+
+export function formatTimecodeByFormat(
+  seconds: number,
+  format: TimecodeFormat,
+  fps: number = 24
+): string {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const h = Math.floor(safeSeconds / 3600);
+  const m = Math.floor((safeSeconds % 3600) / 60);
+  const s = Math.floor(safeSeconds % 60);
+  const base = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+
+  if (format === "HH:MM:SS") return base;
+  if (format === "HH:MM:SS:MMM") {
+    const ms = Math.floor((safeSeconds % 1) * 1000);
+    return `${base}:${String(ms).padStart(3, "0")}`;
+  }
+  const resolvedFps = Number.isFinite(fps) && fps > 0 ? fps : 24;
+  const ff = Math.floor((safeSeconds % 1) * resolvedFps);
+  return `${base}:${String(ff).padStart(2, "0")}`;
+}
+
 export function formatTimecodeShort(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);

@@ -16,8 +16,6 @@ import {
   AlertCircle,
   Circle,
   ChevronRight,
-  LogOut,
-  Building2,
   Settings,
   X,
   Monitor,
@@ -30,6 +28,7 @@ import {
   Search,
   Plus,
   Save,
+  Repeat,
 } from "lucide-react";
 import { useToast } from "@studio/hooks/use-toast";
 import { useAuth } from "@studio/hooks/use-auth";
@@ -60,7 +59,8 @@ import { DeviceSettingsPanel } from "@studio/components/audio/DeviceSettingsPane
 import { cn } from "@studio/lib/utils";
 import {
   parseTimecode,
-  formatTimecode,
+  formatTimecodeByFormat,
+  type TimecodeFormat,
   parseUniversalTimecodeToSeconds,
 } from "@studio/lib/timecode";
 import {
@@ -360,7 +360,7 @@ export default function RecordingRoom() {
   }, []);
 
   const { toast } = useToast();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   const [currentLine, setCurrentLine] = useState(0);
@@ -423,6 +423,9 @@ export default function RecordingRoom() {
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
   const [actorHistory, setActorHistory] = useState<string[]>([]);
   const [characterHistory, setCharacterHistory] = useState<string[]>([]);
+  const [onlySelectedCharacter, setOnlySelectedCharacter] = useState(false);
+  const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
+  const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
   const lastTapRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
@@ -511,6 +514,19 @@ export default function RecordingRoom() {
   const { data: session, isLoading: sessionLoading, isError: sessionError } = useSessionData(studioId, sessionId);
   const { data: production, isLoading: productionLoading } = useProductionScript(studioId, session?.productionId);
   const { data: charactersList } = useCharactersList(session?.productionId);
+  const { data: studioTimecode } = useQuery<{ format: TimecodeFormat }>({
+    queryKey: ["/api/studios", studioId, "timecode-format"],
+    queryFn: () => authFetch(`/api/studios/${studioId}/timecode-format`),
+    enabled: Boolean(studioId),
+  });
+  const logFeatureAudit = useCallback(async (action: string, details?: Record<string, unknown>) => {
+    try {
+      await authFetch(`/api/sessions/${sessionId}/audit-events`, {
+        method: "POST",
+        body: JSON.stringify({ action, details: JSON.stringify(details || {}) }),
+      });
+    } catch {}
+  }, [sessionId]);
   const handleQuickCreateCharacter = useCallback(async () => {
     if (!session?.productionId) return;
     const name = newCharacterName.trim();
@@ -524,10 +540,11 @@ export default function RecordingRoom() {
       pushToHistory(`vhub_character_history_${sessionId}`, name);
       setNewCharacterName("");
       toast({ title: `Personagem ${created.name} cadastrado` });
+      await logFeatureAudit("room.character.created", { characterName: created.name });
     } catch (err: any) {
       toast({ title: "Falha ao cadastrar personagem", description: String(err?.message || err), variant: "destructive" });
     }
-  }, [session, newCharacterName, queryClient, pushToHistory, sessionId, toast]);
+  }, [session, newCharacterName, queryClient, pushToHistory, sessionId, toast, logFeatureAudit]);
 
   const scriptLines: ScriptLine[] = (() => {
     if (!production?.scriptJson) return [];
@@ -573,9 +590,27 @@ export default function RecordingRoom() {
   })();
 
   const currentScriptLine = scriptLines[currentLine];
+  const formatLiveTimecode = useCallback((seconds: number) => {
+    return formatTimecodeByFormat(seconds, timecodeFormat, 24);
+  }, [timecodeFormat]);
+
+  const displayedScriptLines = useMemo(() => {
+    return scriptLines
+      .map((line, originalIndex) => ({ ...line, originalIndex }))
+      .filter((line) => {
+        if (!onlySelectedCharacter) return true;
+        const selectedCharacter = recordingProfile?.characterName?.trim().toLowerCase();
+        if (!selectedCharacter) return true;
+        return line.character.trim().toLowerCase() === selectedCharacter;
+      });
+  }, [scriptLines, onlySelectedCharacter, recordingProfile?.characterName]);
+
+  useEffect(() => {
+    if (!studioTimecode?.format) return;
+    setTimecodeFormat(studioTimecode.format);
+  }, [studioTimecode?.format]);
 
   const { data: takesList = [] } = useTakesList(sessionId);
-  const takeCount = takesList.length;
   const pendingApprovalTakes = useMemo(() => takesList.filter((take: any) => !take.isPreferred), [takesList]);
 
   const savedTakes = useMemo(() => {
@@ -589,10 +624,11 @@ export default function RecordingRoom() {
   const handleApproveTake = useCallback(async (takeId: string) => {
     await authFetch(`/api/takes/${takeId}/prefer`, { method: "POST" });
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    await logFeatureAudit("room.take.approved", { takeId });
     toast({ title: "Take aprovado e salvo pelo diretor" });
     setApprovalModalTakeId(null);
     setApprovalFinalStep(false);
-  }, [queryClient, sessionId, toast]);
+  }, [queryClient, sessionId, toast, logFeatureAudit]);
 
   const [videoTime, setVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -630,7 +666,6 @@ export default function RecordingRoom() {
   const [controlPermissions, setControlPermissions] = useState<Set<string>>(new Set());
   const [globalControlEnabled, setGlobalControlEnabled] = useState(false);
   const [presenceUsers, setPresenceUsers] = useState<any[]>([]);
-  const [prerollInitiatorUserId, setPrerollInitiatorUserId] = useState<string | null>(null);
 
   const isDirector = useMemo(() => {
     if (!user || !session?.participants) return false;
@@ -682,7 +717,6 @@ export default function RecordingRoom() {
         if (videoRef.current) videoRef.current.currentTime = msg.currentTime;
       } else if (msg.type === "video:countdown") {
         setCountdownValue(msg.count);
-        setPrerollInitiatorUserId(msg.initiatorUserId);
         if (msg.count > 0 && micState?.audioContext) {
           playCountdownBeep(micState.audioContext);
         }
@@ -813,7 +847,9 @@ export default function RecordingRoom() {
       }
 
       if (isLooping) {
-        const range = customLoop || (currentScriptLine ? { start: currentScriptLine.start - preRoll, end: (currentScriptLine.end || currentScriptLine.start + 2) + postRoll } : null);
+        const effectivePreRoll = isLooping ? 2 : preRoll;
+        const effectivePostRoll = isLooping ? 2 : postRoll;
+        const range = customLoop || (currentScriptLine ? { start: currentScriptLine.start - effectivePreRoll, end: (currentScriptLine.end || currentScriptLine.start + 2) + effectivePostRoll } : null);
         if (range && time >= range.end) {
           video.currentTime = Math.max(0, range.start);
         }
@@ -909,10 +945,12 @@ export default function RecordingRoom() {
     if (recordingStatus !== "idle" || !micState) return;
     const video = videoRef.current;
     if (!video) return;
-    const prerollStart = Math.max(0, (video.currentTime || 0) - 3);
+    const loopPreroll = isLooping ? 3 : preRoll;
+    const startFrom = isLooping && customLoop ? customLoop.start : (video.currentTime || 0);
+    const prerollStart = Math.max(0, startFrom - loopPreroll);
     video.currentTime = prerollStart;
     emitVideoEvent("seek", { currentTime: prerollStart });
-    logAudioStep("countdown-started", { initiatorUserId: user?.id, prerollStart });
+    logAudioStep("countdown-started", { initiatorUserId: user?.id, prerollStart, loopEnabled: isLooping });
     setCountdownValue(3);
     setRecordingStatus("recording");
     startCapture(micState);
@@ -932,7 +970,7 @@ export default function RecordingRoom() {
         countdownTimerRef.current = null;
       }
     }, 1000);
-  }, [recordingStatus, micState, emitVideoEvent, logAudioStep, user?.id]);
+  }, [recordingStatus, micState, emitVideoEvent, logAudioStep, user?.id, isLooping, customLoop, preRoll]);
 
   const handleStopRecording = useCallback(async () => {
     if (recordingStatus !== "recording" || !micState) return;
@@ -1021,14 +1059,22 @@ export default function RecordingRoom() {
 
     if (loopSelectionMode === "selecting-start") {
       setCustomLoop({ start: line.start, end: line.end || (line.start + 2) });
+      setLoopAnchorIndex(index);
       setLoopSelectionMode("selecting-end");
       toast({ title: "Inicio selecionado", description: "Clique na fala final do loop." });
     } else if (loopSelectionMode === "selecting-end") {
-      setCustomLoop((prev) => ({ start: prev?.start || line.start, end: line.end || (line.start + 2) }));
+      const startIndex = loopAnchorIndex ?? index;
+      const startLine = scriptLines[startIndex] || line;
+      const start = Math.min(startLine.start, line.start);
+      const end = Math.max(startLine.end || (startLine.start + 2), line.end || (line.start + 2));
+      setCustomLoop({ start, end });
       setLoopSelectionMode("idle");
       setIsLooping(true);
-      toast({ title: "Loop definido", description: "Pressione L para desativar." });
-      emitVideoEvent("sync-loop", { loopRange: customLoop });
+      setPreRoll(2);
+      setPostRoll(2);
+      toast({ title: "Loop definido", description: "Trecho selecionado com pre/post-roll de 2 segundos." });
+      emitVideoEvent("sync-loop", { loopRange: { start, end } });
+      logFeatureAudit("room.loop.defined", { start, end, startLineIndex: startIndex, endLineIndex: index });
     } else {
       const video = videoRef.current;
       if (video) {
@@ -1037,7 +1083,25 @@ export default function RecordingRoom() {
       }
       setCurrentLine(index);
     }
-  }, [canTextControl, scriptLines, loopSelectionMode, toast, emitVideoEvent, customLoop]);
+  }, [canTextControl, scriptLines, loopSelectionMode, toast, emitVideoEvent, loopAnchorIndex, logFeatureAudit]);
+
+  const handleLoopButton = useCallback(async () => {
+    if (loopSelectionMode !== "idle") {
+      setLoopSelectionMode("idle");
+      setIsLooping(false);
+      setCustomLoop(null);
+      setLoopAnchorIndex(null);
+      setPreRoll(1);
+      setPostRoll(1);
+      await logFeatureAudit("room.loop.cleared");
+      return;
+    }
+    setLoopSelectionMode("selecting-start");
+    setCustomLoop(null);
+    setLoopAnchorIndex(null);
+    await logFeatureAudit("room.loop.selection_started");
+    toast({ title: "Selecione a primeira fala do loop" });
+  }, [loopSelectionMode, logFeatureAudit, toast]);
 
   const handleDiscard = useCallback(() => {
     setLastRecording(null);
@@ -1083,12 +1147,12 @@ export default function RecordingRoom() {
       else if (code === shortcuts.stop) { e.preventDefault(); if (recordingStatus === "recording") handleStopRecording(); else handleStopPlayback(); }
       else if (code === shortcuts.back) { e.preventDefault(); seek(-2); }
       else if (code === shortcuts.forward) { e.preventDefault(); seek(2); }
-      else if (code === shortcuts.loop) { e.preventDefault(); setIsLooping((v) => !v); }
+      else if (code === shortcuts.loop) { e.preventDefault(); void handleLoopButton(); }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [shortcuts, handlePlayPause, handleStopRecording, handleStopPlayback, recordingStatus, startCountdown, seek, isLooping]);
+  }, [shortcuts, handlePlayPause, handleStopRecording, handleStopPlayback, recordingStatus, startCountdown, seek, handleLoopButton]);
 
   if (sessionLoading || productionLoading) {
     return (
@@ -1119,7 +1183,18 @@ export default function RecordingRoom() {
   }
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex flex-col select-none relative bg-background text-foreground dark">
+    <div
+      className="recording-room h-screen w-screen overflow-hidden flex flex-col select-none relative bg-background text-foreground dark"
+      onClickCapture={(event) => {
+        const target = event.target as HTMLElement | null;
+        const button = target?.closest?.("button") as HTMLButtonElement | null;
+        if (!button) return;
+        button.classList.remove("rr-click-blink");
+        void button.offsetWidth;
+        button.classList.add("rr-click-blink");
+        window.setTimeout(() => button.classList.remove("rr-click-blink"), 300);
+      }}
+    >
       {/* Cinematic Background */}
       <div className="fixed inset-0 z-0 pointer-events-none">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/5 via-background to-background opacity-50"></div>
@@ -1495,22 +1570,15 @@ export default function RecordingRoom() {
                   <span className="text-[11px] font-semibold">{pendingApprovalTakes.length}</span>
                 </button>
               )}
-              <div className="flex items-center gap-1.5 border-r border-border/60 pr-3 mr-1">
-                <Link href="/hub-dub/studios">
-                  <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/5" data-testid="button-room-switch-studio">
-                    <Building2 className="h-3 w-3" />
-                    <span className="hidden lg:inline">Trocar Estúdio</span>
-                  </button>
-                </Link>
-                <button 
-                  onClick={() => logout()}
-                  className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-red-500 transition-colors px-2 py-1 rounded-md hover:bg-red-500/5" 
-                  data-testid="button-room-logout"
+              <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
+                <button
+                  onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); }}
+                  className="h-9 px-3 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 text-[11px] font-semibold"
+                  data-testid="button-room-panel"
                 >
-                  <LogOut className="h-3 w-3" />
-                  <span className="hidden lg:inline">Sair</span>
+                  PAINEL
                 </button>
-              </div>
+              </Link>
               <button
                 onClick={() => setDeviceSettingsOpen(true)}
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
@@ -1596,7 +1664,7 @@ export default function RecordingRoom() {
                 <div className="absolute bottom-16 left-0 right-0 bg-gradient-to-t from-black/95 via-black/50 to-transparent pt-10 sm:pt-16 pb-4 sm:pb-6 px-4 sm:px-8 pointer-events-none">
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="text-[10px] sm:text-[11px] font-mono text-blue-300/90 bg-black/50 px-1.5 py-0.5 rounded">
-                      {formatTimecode(currentScriptLine.start)}
+                      {formatLiveTimecode(currentScriptLine.start)}
                     </span>
                     <span className="text-[11px] sm:text-xs font-semibold text-blue-300 uppercase tracking-widest">
                       {currentScriptLine.character}
@@ -1636,8 +1704,8 @@ export default function RecordingRoom() {
 
                 <div className="flex-1 flex flex-col gap-1">
                   <div className="flex items-center justify-between text-[10px] font-mono text-white/50">
-                    <span>{formatTimecode(videoTime)}</span>
-                    <span>{formatTimecode(videoDuration)}</span>
+                    <span>{formatLiveTimecode(videoTime)}</span>
+                    <span>{formatLiveTimecode(videoDuration)}</span>
                   </div>
                   <div className="relative h-1.5 rounded-full cursor-pointer group bg-white/10" onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
@@ -1651,6 +1719,18 @@ export default function RecordingRoom() {
                 </div>
 
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleLoopButton}
+                    className={cn(
+                      "w-10 h-10 rounded-xl flex items-center justify-center transition-all border",
+                      loopSelectionMode !== "idle" || isLooping
+                        ? "bg-indigo-500/20 border-indigo-400/50 text-indigo-300"
+                        : "bg-white/5 border-white/10 text-white/70 hover:text-white"
+                    )}
+                    aria-label="Configurar loop"
+                  >
+                    <Repeat className="w-4 h-4" />
+                  </button>
                   {recordingStatus === "idle" || recordingStatus === "recorded" ? (
                     <button
                       onClick={startCountdown}
@@ -1691,6 +1771,13 @@ export default function RecordingRoom() {
                   )}
                 </div>
               )}
+              {(customLoop || loopSelectionMode !== "idle") && (
+                <div className="absolute top-3 left-3 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/40 px-3 flex items-center text-[11px] text-indigo-100 z-30">
+                  {loopSelectionMode === "selecting-start" && "Loop: selecione a primeira fala"}
+                  {loopSelectionMode === "selecting-end" && "Loop: selecione a última fala"}
+                  {loopSelectionMode === "idle" && customLoop && `Loop ativo ${formatLiveTimecode(customLoop.start)} - ${formatLiveTimecode(customLoop.end)}`}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1703,16 +1790,37 @@ export default function RecordingRoom() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => { setScriptAutoFollow(true); syncScrollToCurrentVideoTime(); }}
+                onClick={() => {
+                  const next = !scriptAutoFollow;
+                  setScriptAutoFollow(next);
+                  if (next) syncScrollToCurrentVideoTime();
+                  logFeatureAudit("room.scroll.mode_changed", { mode: next ? "automatic" : "manual" });
+                }}
                 className={cn(
                   "text-[10px] px-2 py-1 rounded-full transition-colors border",
                   scriptAutoFollow ? "bg-primary/15 text-primary border-primary/25" : "bg-muted/60 text-muted-foreground border-border/70"
                 )}
               >
-                {scriptAutoFollow ? "AUTO" : "SEGUIR"}
+                {scriptAutoFollow ? "ROLAGEM AUTOMÁTICA" : "ROLAGEM MANUAL"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !onlySelectedCharacter;
+                  setOnlySelectedCharacter(next);
+                  logFeatureAudit("room.character_filter.toggled", { enabled: next, character: recordingProfile?.characterName || null });
+                }}
+                disabled={!recordingProfile}
+                className={cn(
+                  "text-[10px] px-2 py-1 rounded-full transition-colors border",
+                  onlySelectedCharacter ? "bg-primary/15 text-primary border-primary/25" : "bg-muted/60 text-muted-foreground border-border/70",
+                  !recordingProfile && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                APENAS PERSONAGEM
               </button>
               <span className="text-xs text-muted-foreground">
-                <span className="font-mono text-foreground">{currentLine + 1}</span>
+                <span className="font-mono text-foreground">{displayedScriptLines.length}</span>
                 {" "}/{" "}
                 {scriptLines.length}
               </span>
@@ -1729,9 +1837,11 @@ export default function RecordingRoom() {
               scrollSyncCurrentRef.current = scriptViewportRef.current?.scrollTop || 0;
             }}
           >
-              {scriptLines.map((line, i) => {
+              {displayedScriptLines.map((line) => {
+                const i = line.originalIndex;
                 const isActive = i === currentLine;
                 const isDone = savedTakes.has(i);
+                const isInLoop = customLoop ? line.start >= customLoop.start && line.end <= customLoop.end : false;
                 return (
                   <div
                     key={i}
@@ -1740,11 +1850,12 @@ export default function RecordingRoom() {
                     className={cn(
                       "mb-3 px-5 py-4 rounded-xl transition-all duration-300 relative overflow-hidden",
                       isActive ? "bg-background/85 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.22)] backdrop-blur-md" : "bg-transparent",
+                      isInLoop && "shadow-[inset_0_0_0_1px_rgba(129,140,248,0.45)] bg-indigo-500/10",
                       canTextControl ? "cursor-pointer" : "cursor-default"
                     )}
                   >
                     <div className="flex items-center gap-3 mb-2">
-                      <span className="text-[16px] font-mono tabular-nums text-muted-foreground">{formatTimecode(line.start)}</span>
+                      <span className="text-[16px] font-mono tabular-nums text-muted-foreground">#{i + 1} · {formatLiveTimecode(line.start)}</span>
                       <span className={cn("text-[24px] font-extrabold uppercase tracking-tight", isActive ? "text-primary" : "text-muted-foreground")}>
                         {line.character}
                       </span>
@@ -1827,7 +1938,8 @@ export default function RecordingRoom() {
                       </button>
                     </div>
                     <div className="flex-1 overflow-y-auto pb-20">
-                      {scriptLines.map((line, i) => {
+                      {displayedScriptLines.map((line) => {
+                        const i = line.originalIndex;
                         const isActive = i === currentLine;
                         const isDone = savedTakes.has(i);
                         return (
@@ -1840,7 +1952,7 @@ export default function RecordingRoom() {
                             )}
                           >
                             <div className="flex items-center gap-2 mb-3">
-                              <span className="text-[11px] font-mono text-white/30">{formatTimecode(line.start)}</span>
+                              <span className="text-[11px] font-mono text-white/30">#{i + 1} · {formatLiveTimecode(line.start)}</span>
                               <span className={cn("text-sm font-bold uppercase tracking-widest", isActive ? "text-primary" : "text-white/40")}>
                                 {line.character}
                               </span>

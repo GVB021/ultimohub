@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseUniversalTimecodeToSeconds } from "../client/src/studio/lib/timecode.ts";
+import { formatTimecodeByFormat, parseUniversalTimecodeToSeconds } from "../client/src/studio/lib/timecode.ts";
 
 test("parseUniversalTimecodeToSeconds converte HH:MM:SS", () => {
   assert.equal(parseUniversalTimecodeToSeconds("01:02:30"), 3750);
@@ -57,3 +57,8 @@ test("parseUniversalTimecodeToSeconds converte 10.000 linhas rápido", () => {
   assert.ok(elapsedMs < 100, `Conversão demorou ${elapsedMs.toFixed(2)}ms`);
 });
 
+test("formatTimecodeByFormat respeita formatos configuráveis", () => {
+  assert.equal(formatTimecodeByFormat(3723.456, "HH:MM:SS"), "01:02:03");
+  assert.equal(formatTimecodeByFormat(3723.456, "HH:MM:SS:MMM"), "01:02:03:456");
+  assert.equal(formatTimecodeByFormat(3723.5, "HH:MM:SS:FF", 24), "01:02:03:12");
+});
