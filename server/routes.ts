@@ -34,6 +34,7 @@ import {
   uploadToSupabaseStorage,
 } from "./lib/supabase";
 import { decideStudioAutoEntry } from "./lib/studio-auto-entry";
+import { annotateTakeVersions } from "./lib/take-versioning";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -1061,6 +1062,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return;
     }
     res.status(200).json(takesList.filter((take) => take.isPreferred));
+  });
+
+  app.get("/api/sessions/:sessionId/recordings", requireAuth, async (req, res) => {
+    const session = await verifySessionAccess(req, res, req.params.sessionId);
+    if (!session) return;
+    const user = (req as any).user!;
+    const canManage = await canManageSessionTakes(user, req.params.sessionId, session.studioId);
+    const takesList = annotateTakeVersions(await storage.getTakes(req.params.sessionId));
+    if (canManage) {
+      await storage.createAuditLog({
+        userId: user.id,
+        action: "recordings.access.privileged",
+        details: JSON.stringify({ sessionId: req.params.sessionId, count: takesList.length }),
+      });
+      res.status(200).json(takesList);
+      return;
+    }
+    res.status(200).json(
+      takesList.filter(
+        (take: any) => String(take.voiceActorId || "") === String(user.id || "") || String(take.userId || "") === String(user.id || "")
+      )
+    );
   });
 
   app.post("/api/takes/:id/prefer", requireAuth, async (req, res) => {

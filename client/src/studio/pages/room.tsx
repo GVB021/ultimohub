@@ -27,6 +27,7 @@ import {
   Headphones,
   Save,
   Repeat,
+  ListMusic,
 } from "lucide-react";
 import { useToast } from "@studio/hooks/use-toast";
 import { useAuth } from "@studio/hooks/use-auth";
@@ -323,6 +324,32 @@ function useTakesList(sessionId: string) {
   });
 }
 
+function useRecordingsList(sessionId: string) {
+  const cacheKey = `vhub_recordings_cache_${sessionId}`;
+  const query = useQuery({
+    queryKey: ["/api/sessions", sessionId, "recordings"],
+    queryFn: () => authFetch(`/api/sessions/${sessionId}/recordings`),
+    enabled: Boolean(sessionId),
+    refetchInterval: 5000,
+    initialData: () => {
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 1000,
+  });
+  useEffect(() => {
+    if (!Array.isArray(query.data)) return;
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(query.data.slice(0, 120)));
+    } catch {}
+  }, [cacheKey, query.data]);
+  return query;
+}
+
 function CountdownOverlay({ count }: { count: number }) {
   return (
     <div className="absolute inset-0 z-[100] flex items-center justify-center pointer-events-none">
@@ -416,6 +443,8 @@ export default function RecordingRoom() {
   const [approvalModalTakeId, setApprovalModalTakeId] = useState<string | null>(null);
   const [approvalFinalStep, setApprovalFinalStep] = useState(false);
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
+  const [recordingsOpen, setRecordingsOpen] = useState(false);
+  const [recordingsScope, setRecordingsScope] = useState<"mine" | "all">("mine");
   const [onlySelectedCharacter, setOnlySelectedCharacter] = useState(false);
   const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
@@ -562,7 +591,12 @@ export default function RecordingRoom() {
   }, [studioTimecode?.format]);
 
   const { data: takesList = [] } = useTakesList(sessionId);
+  const { data: recordingsList = [] } = useRecordingsList(sessionId);
   const pendingApprovalTakes = useMemo(() => takesList.filter((take: any) => !take.isPreferred), [takesList]);
+  const approvalTargetTake = useMemo(
+    () => pendingApprovalTakes.find((take: any) => take.id === approvalModalTakeId) || null,
+    [pendingApprovalTakes, approvalModalTakeId]
+  );
 
   const savedTakes = useMemo(() => {
     const s = new Set<number>();
@@ -572,18 +606,22 @@ export default function RecordingRoom() {
     return s;
   }, [takesList]);
 
-  const handleApproveTake = useCallback(async (takeId: string) => {
+  const handleApproveTake = useCallback(async (take: any) => {
+    const takeId = take.id;
     await authFetch(`/api/takes/${takeId}/prefer`, { method: "POST" });
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
     await logFeatureAudit("room.take.approved", { takeId });
     toast({ title: "Take aprovado e salvo pelo diretor" });
     setApprovalModalTakeId(null);
     setApprovalFinalStep(false);
   }, [queryClient, sessionId, toast, logFeatureAudit]);
 
-  const handleDiscardTake = useCallback(async (takeId: string) => {
+  const handleDiscardTake = useCallback(async (take: any) => {
+    const takeId = take.id;
     await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
     await logFeatureAudit("room.take.discarded", { takeId });
     toast({ title: "Take descartado" });
   }, [queryClient, sessionId, toast, logFeatureAudit]);
@@ -639,6 +677,11 @@ export default function RecordingRoom() {
   }, [user, session]);
 
   const isPrivileged = isDirector || user?.role === "platform_owner";
+  const scopedRecordings = useMemo(() => {
+    const source = Array.isArray(recordingsList) ? recordingsList : [];
+    if (isPrivileged && recordingsScope === "all") return source;
+    return source.filter((take: any) => String(take.voiceActorId || "") === String(user?.id || "") || String(take.userId || "") === String(user?.id || ""));
+  }, [recordingsList, isPrivileged, recordingsScope, user?.id]);
   const isApproverRole = useCallback((role: string | undefined | null) => {
     if (!role) return false;
     const normalized = role.toLowerCase();
@@ -698,13 +741,20 @@ export default function RecordingRoom() {
         setTextControllerUserIds(new Set(msg.targetUserIds));
       } else if (msg.type === "presence:update") {
         setPresenceUsers(msg.users);
+      } else if (msg.type === "video:take-status") {
+        if (String(msg.targetUserId || "") !== String(user?.id || "")) return;
+        if (msg.status === "approved") {
+          toast({ title: "Seu take foi aprovado" });
+        } else if (msg.status === "discarded") {
+          toast({ title: "Seu take foi descartado", variant: "destructive" });
+        }
       }
     };
 
     return () => {
       ws.close();
     };
-  }, [sessionId, micState]);
+  }, [sessionId, micState, user?.id, toast]);
 
   const rebuildScrollAnchors = useCallback(() => {
     const viewport = scriptViewportRef.current;
@@ -885,31 +935,118 @@ export default function RecordingRoom() {
     };
   }, []);
 
-  const uploadTakeForDirector = useCallback(async (result: RecordingResult, metrics: QualityMetrics | null, autoApprove: boolean) => {
+  const pendingUploadStorageKey = `vhub_pending_takes_${sessionId}`;
+
+  const blobToBase64 = useCallback(async (blob: Blob) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Falha ao converter áudio para cache local"));
+      reader.readAsDataURL(blob);
+    });
+  }, []);
+
+  const dataUrlToBlob = useCallback((dataUrl: string) => {
+    const [meta, base64] = String(dataUrl || "").split(",");
+    const match = /data:(.*?);base64/.exec(meta || "");
+    const mime = match?.[1] || "audio/wav";
+    const binary = atob(base64 || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }, []);
+
+  const enqueuePendingUpload = useCallback(async (input: {
+    dataUrl: string;
+    characterId: string;
+    voiceActorId: string;
+    lineIndex: number;
+    durationSeconds: number;
+    startTimeSeconds: number;
+    qualityScore: number | null;
+    isPreferred: boolean;
+  }) => {
+    try {
+      const existingRaw = localStorage.getItem(pendingUploadStorageKey);
+      const existing = existingRaw ? JSON.parse(existingRaw) : [];
+      const next = [input, ...existing].slice(0, 20);
+      localStorage.setItem(pendingUploadStorageKey, JSON.stringify(next));
+    } catch {}
+  }, [pendingUploadStorageKey]);
+
+  const flushPendingUploads = useCallback(async () => {
+    let pending: any[] = [];
+    try {
+      const raw = localStorage.getItem(pendingUploadStorageKey);
+      pending = raw ? JSON.parse(raw) : [];
+    } catch {
+      pending = [];
+    }
+    if (!pending.length) return;
+    const stillPending: any[] = [];
+    for (const item of pending) {
+      try {
+        const formData = new FormData();
+        formData.append("audio", dataUrlToBlob(item.dataUrl), `take_retry_${sessionId}_${Date.now()}.wav`);
+        formData.append("characterId", String(item.characterId));
+        formData.append("voiceActorId", String(item.voiceActorId));
+        formData.append("lineIndex", String(item.lineIndex));
+        formData.append("durationSeconds", String(item.durationSeconds));
+        formData.append("startTimeSeconds", String(item.startTimeSeconds));
+        formData.append("isPreferred", String(Boolean(item.isPreferred)));
+        if (item.qualityScore !== null && item.qualityScore !== undefined) {
+          formData.append("qualityScore", String(item.qualityScore));
+        }
+        await authFetch(`/api/sessions/${sessionId}/takes`, { method: "POST", body: formData });
+      } catch {
+        stillPending.push(item);
+      }
+    }
+    try {
+      localStorage.setItem(pendingUploadStorageKey, JSON.stringify(stillPending));
+    } catch {}
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
+  }, [pendingUploadStorageKey, dataUrlToBlob, sessionId, queryClient]);
+
+  useEffect(() => {
+    flushPendingUploads().catch(() => {});
+    const onOnline = () => { flushPendingUploads().catch(() => {}); };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [flushPendingUploads]);
+
+  const uploadTakeForDirector = useCallback(async (input: {
+    wavBlob: Blob;
+    durationSeconds: number;
+    qualityScore: number | null;
+    autoApprove: boolean;
+    lineIndex: number;
+    startTimeSeconds: number;
+  }) => {
     if (!recordingProfile) {
       throw new Error("Perfil de gravação não configurado.");
     }
-    const wavBuffer = encodeWav(result.samples);
-    const wavBlob = wavToBlob(wavBuffer);
     const formData = new FormData();
-    formData.append("audio", wavBlob, `take_${sessionId}_${Date.now()}.wav`);
+    formData.append("audio", input.wavBlob, `take_${sessionId}_${Date.now()}.wav`);
     formData.append("characterId", recordingProfile.characterId);
     formData.append("voiceActorId", recordingProfile.voiceActorId || user?.id || "");
-    formData.append("lineIndex", String(currentLine));
-    formData.append("durationSeconds", String(result.durationSeconds));
-    formData.append("startTimeSeconds", String(videoRef.current?.currentTime || 0));
-    if (metrics) {
-      formData.append("qualityScore", String(metrics.score));
+    formData.append("lineIndex", String(input.lineIndex));
+    formData.append("durationSeconds", String(input.durationSeconds));
+    formData.append("startTimeSeconds", String(input.startTimeSeconds));
+    if (input.qualityScore !== null && input.qualityScore !== undefined) {
+      formData.append("qualityScore", String(input.qualityScore));
     }
-    formData.append("isPreferred", String(autoApprove));
+    formData.append("isPreferred", String(input.autoApprove));
     const take = await authFetch(`/api/sessions/${sessionId}/takes`, {
       method: "POST",
       body: formData,
     });
     setLastUploadedTakeId(take.id);
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
     return take;
-  }, [recordingProfile, sessionId, user?.id, currentLine, queryClient]);
+  }, [recordingProfile, sessionId, user?.id, queryClient]);
 
   const startCountdown = useCallback(() => {
     if (recordingStatus !== "idle" || !micState) return;
@@ -978,19 +1115,49 @@ export default function RecordingRoom() {
     try {
       setIsSaving(true);
       const autoApprove = !hasApproverPresent && !isPrivileged;
-      await uploadTakeForDirector(result, metrics, autoApprove);
+      const lineIndex = currentLine;
+      const startTimeSeconds = Number(videoRef.current?.currentTime || 0);
+      const wavBuffer = encodeWav(result.samples);
+      const wavBlob = wavToBlob(wavBuffer);
+      const startedAt = performance.now();
+      await uploadTakeForDirector({
+        wavBlob,
+        durationSeconds: result.durationSeconds,
+        qualityScore: metrics.score,
+        autoApprove,
+        lineIndex,
+        startTimeSeconds,
+      });
+      const elapsedMs = performance.now() - startedAt;
+      if (elapsedMs > 3000) {
+        toast({ title: "Salvamento acima da meta", description: `${Math.round(elapsedMs)}ms`, variant: "destructive" });
+      }
       if (autoApprove) {
         toast({ title: "Take salvo automaticamente" });
-        await logFeatureAudit("room.take.saved_without_approver", { lineIndex: currentLine });
+        await logFeatureAudit("room.take.saved_without_approver", { lineIndex });
       } else {
         toast({ title: isDirector ? "Take recebido para aprovação" : "Take enviado para aprovação" });
       }
     } catch (err: any) {
+      try {
+        const wavBlob = wavToBlob(encodeWav(result.samples));
+        await enqueuePendingUpload({
+          dataUrl: await blobToBase64(wavBlob),
+          characterId: recordingProfile?.characterId || "",
+          voiceActorId: recordingProfile?.voiceActorId || user?.id || "",
+          lineIndex: currentLine,
+          durationSeconds: result.durationSeconds,
+          startTimeSeconds: Number(videoRef.current?.currentTime || 0),
+          qualityScore: metrics.score,
+          isPreferred: !hasApproverPresent && !isPrivileged,
+        });
+        toast({ title: "Sem conexão. Take salvo no cache local para reenvio automático.", variant: "destructive" });
+      } catch {}
       toast({ title: "Erro ao enviar take", description: String(err?.message || err), variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
-  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine]);
+  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -1338,7 +1505,10 @@ export default function RecordingRoom() {
                         Aprovar
                       </button>
                       <button
-                        onClick={() => handleDiscardTake(take.id)}
+                        onClick={async () => {
+                          await handleDiscardTake(take);
+                          emitVideoEvent("take-status", { status: "discarded", takeId: take.id, targetUserId: take.voiceActorId });
+                        }}
                         className="px-2.5 h-8 rounded-lg text-xs font-medium bg-destructive/15 text-destructive hover:bg-destructive/25 transition-colors"
                         title="Descartar take"
                       >
@@ -1358,6 +1528,58 @@ export default function RecordingRoom() {
                 {pendingApprovalTakes.length === 0 && (
                   <div className="text-sm text-center py-10 text-muted-foreground">
                     Nenhum take pendente de aprovação
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {recordingsOpen && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
+          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[720px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-foreground">Gravações</span>
+                {isPrivileged && (
+                  <button
+                    onClick={() => setRecordingsScope((v) => (v === "all" ? "mine" : "all"))}
+                    className="text-[10px] px-2 py-1 rounded-full border bg-muted/60 text-muted-foreground"
+                  >
+                    {recordingsScope === "all" ? "Todas" : "Minhas"}
+                  </button>
+                )}
+              </div>
+              <button onClick={() => setRecordingsOpen(false)} className="transition-colors text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-6 py-4 max-h-[420px] overflow-y-auto custom-scrollbar">
+              <div className="grid grid-cols-12 text-[10px] uppercase text-muted-foreground tracking-wider pb-2 border-b border-border/60">
+                <span className="col-span-2">Linha</span>
+                <span className="col-span-4">Personagem</span>
+                <span className="col-span-2">Versão</span>
+                <span className="col-span-2">Status</span>
+                <span className="col-span-2 text-right">Duração</span>
+              </div>
+              <div className="space-y-1 mt-2">
+                {scopedRecordings.map((take: any) => (
+                  <div key={take.id} className="grid grid-cols-12 items-center text-xs py-2 px-2 rounded-md hover:bg-muted/40">
+                    <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
+                    <span className="col-span-4 truncate">{take.characterName || "-"}</span>
+                    <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
+                    <span className={cn("col-span-2", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
+                      {take.status === "approved" ? "Aprovado" : "Pendente"}
+                    </span>
+                    <span className="col-span-2 text-right font-mono text-muted-foreground">
+                      {take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : "-"}
+                    </span>
+                  </div>
+                ))}
+                {scopedRecordings.length === 0 && (
+                  <div className="text-sm text-center py-10 text-muted-foreground">
+                    Nenhuma gravação encontrada para este filtro
                   </div>
                 )}
               </div>
@@ -1386,7 +1608,9 @@ export default function RecordingRoom() {
                     setApprovalFinalStep(true);
                     return;
                   }
-                  await handleApproveTake(approvalModalTakeId);
+                  if (!approvalTargetTake) return;
+                  await handleApproveTake(approvalTargetTake);
+                  emitVideoEvent("take-status", { status: "approved", takeId: approvalTargetTake.id, targetUserId: approvalTargetTake.voiceActorId });
                 }}
                 className="h-9 px-3 rounded-lg bg-primary text-primary-foreground"
               >
@@ -1478,6 +1702,14 @@ export default function RecordingRoom() {
                   <span className="text-[11px] font-semibold">{pendingApprovalTakes.length}</span>
                 </button>
               )}
+              <button
+                onClick={() => setRecordingsOpen(true)}
+                className="h-7 px-2 rounded-md bg-white/5 border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/10 flex items-center gap-1"
+                data-testid="button-room-recordings"
+              >
+                <ListMusic className="w-3.5 h-3.5" />
+                Gravações
+              </button>
               <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
                 <button
                   onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); }}
@@ -1817,6 +2049,21 @@ export default function RecordingRoom() {
                           <div className="text-left">
                             <div className="font-bold text-sm text-white">Perfil de Gravação</div>
                             <div className="text-[11px] text-white/40 uppercase tracking-wider">Ator & Personagem</div>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-5 h-5 text-white/20" />
+                      </button>
+                      <button
+                        onClick={() => { setRecordingsOpen(true); setMobileMenuOpen(false); }}
+                        className="w-full flex items-center justify-between p-5 rounded-2xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-all min-h-[56px]"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                            <ListMusic className="w-5 h-5" />
+                          </div>
+                          <div className="text-left">
+                            <div className="font-bold text-sm text-white">Gravações</div>
+                            <div className="text-[11px] text-white/40 uppercase tracking-wider">Takes da Sessão</div>
                           </div>
                         </div>
                         <ChevronRight className="w-5 h-5 text-white/20" />

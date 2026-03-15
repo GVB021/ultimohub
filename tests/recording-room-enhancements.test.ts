@@ -22,6 +22,8 @@ test("RecordingRoom expõe filtros e labels novos de rolagem", () => {
   assert.match(room, /ROLAGEM MANUAL/);
   assert.match(room, /toggle-scroll-mode/);
   assert.match(room, /Loop ativo/);
+  assert.match(room, /button-room-recordings/);
+  assert.match(room, /Gravações/);
 });
 
 test("Seleção de personagem usa lista simples sem busca e sem cadastro inline", () => {
@@ -43,6 +45,8 @@ test("API inclui endpoints de timecode por estúdio e auditoria de sessão", () 
   const routes = readFileSync(routesPath, "utf8");
   assert.match(routes, /\/api\/studios\/:studioId\/timecode-format/);
   assert.match(routes, /\/api\/sessions\/:sessionId\/audit-events/);
+  assert.match(routes, /\/api\/sessions\/:sessionId\/recordings/);
+  assert.match(routes, /recordings\.access\.privileged/);
   assert.match(routes, /isPreferred: z\.coerce\.boolean\(\)\.optional\(\)/);
   assert.match(routes, /role === "master"/);
 });

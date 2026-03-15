@@ -142,8 +142,8 @@ export default function Login() {
     login(
       { email: email.trim(), password },
       {
-        onSuccess: () => {
-          setRedirectToAfterAuth(null);
+        onSuccess: (data: any) => {
+          setRedirectToAfterAuth(data?.redirectTo || "/hub-dub/studios");
           setIsSuccess(true);
           toast({ title: lang === "en" ? "Welcome back!" : "Bem-vindo de volta!" });
         },

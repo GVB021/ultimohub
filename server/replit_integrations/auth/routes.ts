@@ -6,6 +6,8 @@ import { authStorage } from "./storage";
 import { storage } from "../../storage";
 import { logger } from "../../lib/logger";
 import { normalizeEmail, onlyDigits, parseBirthDate, validateSimplifiedRegisterInput } from "@shared/register-validation";
+import { normalizePlatformRole } from "@shared/roles";
+import { decideStudioAutoEntry } from "../../lib/studio-auto-entry";
 
 const loginSchema = z.object({
   email: z.string().email("Email invalido"),
@@ -107,10 +109,36 @@ export function registerAuthRoutes(app: Express): void {
         return res.status(403).json({ message: "Sua conta foi rejeitada pelo administrador." });
       }
 
-      req.login(user, (loginErr) => {
+      req.login(user, async (loginErr) => {
         if (loginErr) return next(loginErr);
         const { passwordHash, ...safeUser } = user;
-        return res.json({ user: safeUser });
+        let redirectTo = "/hub-dub/studios";
+        let studioCount = 0;
+        let autoEntryMode: "redirect" | "select" = "select";
+
+        try {
+          const baseStudios = normalizePlatformRole(user.role) === "platform_owner"
+            ? await storage.getStudios()
+            : await storage.getStudiosForUser(user.id);
+          studioCount = baseStudios.length;
+          const decision = decideStudioAutoEntry(baseStudios);
+          if (decision.mode === "redirect") {
+            redirectTo = `/hub-dub/studio/${decision.studioId}/dashboard`;
+            autoEntryMode = "redirect";
+          }
+        } catch (redirectErr) {
+          logger.error("Error resolving login redirect", {
+            userId: user?.id,
+            error: String(redirectErr),
+          });
+        }
+
+        return res.json({
+          user: safeUser,
+          redirectTo,
+          studioCount,
+          autoEntryMode,
+        });
       });
     })(req, res, next);
   });
