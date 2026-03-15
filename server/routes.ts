@@ -9,13 +9,14 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { z } from "zod";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, lt } from "drizzle-orm";
 import {
   productions, characters, takes, users, studios, sessions, studioMemberships, userStudioRoles,
   type Production, type Session,
   insertProductionSchema, insertCharacterSchema, insertTakeSchema, insertSessionSchema,
 } from "@shared/schema";
 import { normalizePlatformRole } from "@shared/roles";
+import { httpSessions } from "@shared/models/auth";
 import { requireAuth, requireAdmin, requireStudioAccess, requireStudioRole } from "./middleware/auth";
 import { logger } from "./lib/logger";
 import { spawn } from "child_process";
@@ -195,9 +196,39 @@ function ensureJobDir(jobId: string): string {
 
 async function logAdminAction(req: Request, action: string, details?: string) {
   try {
-    const userId = (req as any).user?.id;
-    await storage.createAuditLog({ userId, action, details });
+    const user = (req as any).user;
+    const normalizedEmail = String(user?.email || "").trim().toLowerCase();
+    const isMaster = normalizedEmail === "borbaggabriel@gmail.com";
+    const payload = {
+      details: details || null,
+      method: req.method,
+      path: req.path,
+      actorEmail: user?.email || null,
+      actorRole: user?.role || null,
+      ip: req.ip || null,
+      at: new Date().toISOString(),
+    };
+    await storage.createAuditLog({
+      userId: user?.id || null,
+      action: isMaster ? `MASTER_${action}` : action,
+      details: JSON.stringify(payload),
+    });
   } catch {}
+}
+
+async function getUserById(id: string) {
+  const [row] = await db.select().from(users).where(eq(users.id, id));
+  return row || null;
+}
+
+function isMasterEmail(email: string | null | undefined) {
+  return String(email || "").trim().toLowerCase() === "borbaggabriel@gmail.com";
+}
+
+function sessionUserIdFromPayload(payload: any): string | null {
+  const userId = payload?.passport?.user;
+  if (!userId) return null;
+  return String(userId);
 }
 
 async function verifyProductionAccess(req: Request, res: Response, productionId: string): Promise<Production | null> {
@@ -393,10 +424,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const baseStudios = normalizePlatformRole(user.role) === "platform_owner"
       ? await storage.getStudios()
       : await storage.getStudiosForUser(user.id);
+    if (baseStudios.length === 0) {
+      logger.error("User without studios on auto-entry", { userId: user.id, role: user.role });
+      return res.status(409).json({ message: "Nenhum estúdio vinculado ao usuário." });
+    }
 
     const decision = decideStudioAutoEntry(baseStudios);
     if (decision.mode === "error") {
-      return res.status(404).json({ message: decision.message });
+      logger.error("Invalid single studio for auto-entry", {
+        userId: user.id,
+        studioCount: baseStudios.length,
+        message: decision.message,
+      });
+      return res.status(500).json({ message: "Falha ao resolver redirecionamento automático do estúdio." });
     }
 
     if (decision.mode === "redirect") {
@@ -414,7 +454,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     return res.status(200).json({
       mode: "select",
-      count: baseStudios.length,
+      count: Math.max(baseStudios.length, 2),
     });
   });
 
@@ -1069,7 +1109,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!session) return;
     const user = (req as any).user!;
     const canManage = await canManageSessionTakes(user, req.params.sessionId, session.studioId);
-    const takesList = annotateTakeVersions(await storage.getTakes(req.params.sessionId));
+    const takesList = annotateTakeVersions(await storage.getSessionTakesWithDetails(req.params.sessionId));
     if (canManage) {
       await storage.createAuditLog({
         userId: user.id,
@@ -1444,10 +1484,119 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(logs);
   });
 
+  app.get("/api/admin/auth-sessions", requireAuth, requireAdmin, async (_req, res) => {
+    const now = new Date();
+    const rows = await db.select().from(httpSessions);
+    const mapped = rows.map((row: any) => ({
+      sid: row.sid,
+      userId: sessionUserIdFromPayload(row.sess),
+      expire: row.expire,
+      isExpired: new Date(row.expire).getTime() < now.getTime(),
+    }));
+    const userIds = Array.from(new Set(mapped.map((r: any) => r.userId).filter(Boolean))) as string[];
+    const usersById = new Map<string, any>();
+    for (const userId of userIds) {
+      const user = await getUserById(userId);
+      if (user) usersById.set(userId, user);
+    }
+    res.status(200).json(
+      mapped.map((item: any) => ({
+        ...item,
+        userEmail: item.userId ? usersById.get(item.userId)?.email || null : null,
+        userDisplayName: item.userId ? usersById.get(item.userId)?.displayName || usersById.get(item.userId)?.fullName || null : null,
+      }))
+    );
+  });
+
+  app.get("/api/admin/auth-sessions/users", requireAuth, requireAdmin, async (_req, res) => {
+    const rows = await db.select().from(httpSessions);
+    const aggregate = new Map<string, { userId: string; sessions: number; latestExpire: Date }>();
+    for (const row of rows as any[]) {
+      const userId = sessionUserIdFromPayload(row.sess);
+      if (!userId) continue;
+      const current = aggregate.get(userId);
+      if (!current) {
+        aggregate.set(userId, { userId, sessions: 1, latestExpire: new Date(row.expire) });
+      } else {
+        current.sessions += 1;
+        if (new Date(row.expire).getTime() > current.latestExpire.getTime()) {
+          current.latestExpire = new Date(row.expire);
+        }
+      }
+    }
+    const userIds = Array.from(aggregate.keys());
+    const usersById = new Map<string, any>();
+    for (const userId of userIds) {
+      const user = await getUserById(userId);
+      if (user) usersById.set(userId, user);
+    }
+    res.status(200).json(
+      userIds.map((userId) => {
+        const item = aggregate.get(userId)!;
+        const user = usersById.get(userId);
+        return {
+          userId,
+          userEmail: user?.email || null,
+          userDisplayName: user?.displayName || user?.fullName || null,
+          sessions: item.sessions,
+          latestExpire: item.latestExpire,
+        };
+      })
+    );
+  });
+
+  app.post("/api/admin/auth-sessions/cleanup-expired", requireAuth, requireAdmin, async (req, res) => {
+    const now = new Date();
+    const expired = await db.select({ sid: httpSessions.sid }).from(httpSessions).where(lt(httpSessions.expire, now));
+    const expiredSids = expired.map((row: any) => row.sid);
+    for (const sid of expiredSids) {
+      await db.delete(httpSessions).where(eq(httpSessions.sid, sid));
+    }
+    await logAdminAction(req, "CLEANUP_EXPIRED_HTTP_SESSIONS", `Removeu ${expiredSids.length} sessoes expiradas`);
+    res.status(200).json({ removed: expiredSids.length });
+  });
+
+  app.delete("/api/admin/auth-sessions/:sid", requireAuth, requireAdmin, async (req, res) => {
+    await db.delete(httpSessions).where(eq(httpSessions.sid, req.params.sid));
+    await logAdminAction(req, "DELETE_HTTP_SESSION", `Encerrou sessao ${req.params.sid}`);
+    res.status(200).json({ ok: true });
+  });
+
+  app.post("/api/admin/auth-sessions/force-logout-user/:userId", requireAuth, requireAdmin, async (req, res) => {
+    const rows = await db.select().from(httpSessions);
+    const toDelete = (rows as any[])
+      .filter((row) => sessionUserIdFromPayload(row.sess) === req.params.userId)
+      .map((row) => row.sid);
+    for (const sid of toDelete) {
+      await db.delete(httpSessions).where(eq(httpSessions.sid, sid));
+    }
+    await logAdminAction(req, "FORCE_LOGOUT_USER", `Encerrou ${toDelete.length} sessoes de ${req.params.userId}`);
+    res.status(200).json({ removed: toDelete.length });
+  });
+
   // ADMIN USERS
   app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     const allUsers = await storage.getAllUsers();
     res.status(200).json(allUsers);
+  });
+
+  app.get("/api/admin/users/export", requireAuth, requireAdmin, async (_req, res) => {
+    const allUsers = await storage.getAllUsers();
+    const headers = ["id", "email", "displayName", "role", "status", "createdAt"];
+    const rows = allUsers.map((u: any) =>
+      [u.id, u.email || "", u.displayName || u.fullName || "", u.role || "", u.status || "", u.createdAt ? new Date(u.createdAt).toISOString() : ""]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .join(",")
+    );
+    const csv = [headers.join(","), ...rows].join("\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="usuarios_${Date.now()}.csv"`);
+    res.status(200).send(csv);
+  });
+
+  app.get("/api/admin/users/:id/activity", requireAuth, requireAdmin, async (req, res) => {
+    const logs = await storage.getAuditLogs(req.params.id);
+    res.status(200).json(logs);
   });
 
   app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
@@ -1540,6 +1689,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/admin/users/:id/change-role", requireAuth, requireAdmin, async (req, res) => {
     try {
       const { role } = z.object({ role: z.string() }).parse(req.body);
+      const target = await getUserById(req.params.id);
+      if (target && isMasterEmail(target.email) && role !== "platform_owner") {
+        return res.status(403).json({ message: "Usuario master nao pode perder privilegio de platform_owner" });
+      }
+      if (role === "platform_owner" && !isMasterEmail((req as any).user?.email)) {
+        return res.status(403).json({ message: "Somente o master admin pode conceder platform_owner" });
+      }
       const user = await storage.updateUser(req.params.id, { role });
       await logAdminAction(req, "CHANGE_ROLE", `Alterou papel do usuario ${req.params.id} para ${role}`);
       res.status(200).json(user);
@@ -1551,6 +1707,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/admin/users/:id/change-status", requireAuth, requireAdmin, async (req, res) => {
     try {
       const { status } = z.object({ status: z.string() }).parse(req.body);
+      const target = await getUserById(req.params.id);
+      if (target && isMasterEmail(target.email) && status !== "approved") {
+        return res.status(403).json({ message: "Usuario master nao pode ser desativado" });
+      }
       const user = await storage.updateUserStatus(req.params.id, status);
       await logAdminAction(req, "CHANGE_STATUS", `Alterou status do usuario ${req.params.id} para ${status}`);
       res.status(200).json(user);
@@ -1575,7 +1735,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.patch("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const user = await storage.updateUser(req.params.id, req.body);
+      const target = await getUserById(req.params.id);
+      const patch = { ...(req.body || {}) } as any;
+      if (target && isMasterEmail(target.email)) {
+        delete patch.role;
+        delete patch.status;
+        delete patch.email;
+      }
+      if (patch.role === "platform_owner" && !isMasterEmail((req as any).user?.email)) {
+        return res.status(403).json({ message: "Somente o master admin pode conceder platform_owner" });
+      }
+      const user = await storage.updateUser(req.params.id, patch);
       await logAdminAction(req, "UPDATE_USER", `Atualizou usuario ${req.params.id}`);
       res.status(200).json(user);
     } catch (err: any) {
@@ -1585,6 +1755,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
+      const target = await getUserById(req.params.id);
+      if (target && isMasterEmail(target.email)) {
+        return res.status(403).json({ message: "Usuario master nao pode ser excluido" });
+      }
       await storage.deleteUser(req.params.id);
       await logAdminAction(req, "DELETE_USER", `Excluiu usuario ${req.params.id}`);
       res.status(200).json({ ok: true });
@@ -1593,10 +1767,228 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.post("/api/admin/users/:id/assign-studio", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const payload = z.object({
+        studioId: z.string().min(1),
+        roles: z.array(z.string()).optional(),
+      }).parse(req.body || {});
+      const existingMemberships = await storage.getMembershipsByUser(req.params.id);
+      const existing = existingMemberships.find((m) => m.studioId === payload.studioId);
+      let membershipId = "";
+      if (existing) {
+        const primaryRole = payload.roles?.[0] || existing.role || "dublador";
+        await storage.updateMembershipStatus(existing.id, "approved", primaryRole);
+        membershipId = existing.id;
+      } else {
+        const primaryRole = payload.roles?.[0] || "dublador";
+        const created = await storage.createMembership({
+          userId: req.params.id,
+          studioId: payload.studioId,
+          role: primaryRole,
+          status: "approved",
+        });
+        membershipId = created.id;
+      }
+      const normalizedRoles = payload.roles?.length ? payload.roles : ["dublador"];
+      await storage.setUserStudioRoles(membershipId, normalizedRoles);
+      await storage.createNotification({
+        userId: req.params.id,
+        type: "membership_approved",
+        title: "Novo estudo liberado",
+        message: "Voce foi alocado em um novo estudo.",
+        isRead: false,
+        relatedId: payload.studioId,
+      });
+      await logAdminAction(req, "ASSIGN_USER_TO_STUDIO", `Atribuiu usuario ${req.params.id} ao estudio ${payload.studioId}`);
+      res.status(200).json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Falha ao atribuir usuario ao estudio" });
+    }
+  });
+
+  app.delete("/api/admin/users/:id/studios/:studioId", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const memberships = await storage.getMembershipsByUser(req.params.id);
+      const target = memberships.find((m) => m.studioId === req.params.studioId);
+      if (!target) return res.status(404).json({ message: "Vinculo nao encontrado" });
+      await db.delete(userStudioRoles).where(eq(userStudioRoles.membershipId, target.id));
+      await db.delete(studioMemberships).where(eq(studioMemberships.id, target.id));
+      await logAdminAction(req, "UNASSIGN_USER_FROM_STUDIO", `Desvinculou usuario ${req.params.id} do estudio ${req.params.studioId}`);
+      res.status(200).json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Falha ao desvincular usuario do estudio" });
+    }
+  });
+
   // ADMIN STUDIOS
   app.get("/api/admin/studios", requireAuth, requireAdmin, async (req, res) => {
     const allStudios = await storage.getStudios();
     res.status(200).json(allStudios);
+  });
+
+  app.get("/api/admin/studios/:id/users", requireAuth, requireAdmin, async (req, res) => {
+    const memberships = await storage.getStudioMemberships(req.params.id);
+    const enriched = await Promise.all(
+      memberships.map(async (membership: any) => {
+        const roles = await storage.getUserStudioRoles(membership.id);
+        return {
+          membershipId: membership.id,
+          userId: membership.userId,
+          status: membership.status,
+          role: membership.role,
+          roles: roles.map((r: any) => r.role),
+          user: membership.user || null,
+          createdAt: membership.createdAt,
+        };
+      })
+    );
+    res.status(200).json(enriched);
+  });
+
+  app.get("/api/admin/studios/:id/study-config", requireAuth, requireAdmin, async (_req, res) => {
+    const profile = await storage.getStudioProfile(_req.params.id);
+    const studyConfig = profile?.studyConfig || {
+      capacity: null,
+      deadlineDays: null,
+      eligibilityRoles: ["aluno", "dublador"],
+      autoNotify: true,
+    };
+    res.status(200).json(studyConfig);
+  });
+
+  app.put("/api/admin/studios/:id/study-config", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const payload = z.object({
+        capacity: z.number().int().positive().nullable().optional(),
+        deadlineDays: z.number().int().positive().nullable().optional(),
+        eligibilityRoles: z.array(z.string()).optional(),
+        autoNotify: z.boolean().optional(),
+      }).parse(req.body || {});
+      const profile = await storage.getStudioProfile(req.params.id);
+      const next = {
+        capacity: payload.capacity ?? profile?.studyConfig?.capacity ?? null,
+        deadlineDays: payload.deadlineDays ?? profile?.studyConfig?.deadlineDays ?? null,
+        eligibilityRoles: payload.eligibilityRoles?.length ? payload.eligibilityRoles : (profile?.studyConfig?.eligibilityRoles || ["aluno", "dublador"]),
+        autoNotify: payload.autoNotify ?? profile?.studyConfig?.autoNotify ?? true,
+      };
+      await storage.upsertStudioProfile(req.params.id, { studyConfig: next });
+      await logAdminAction(req, "UPDATE_STUDY_CONFIG", `Atualizou configuracao de estudo do estudio ${req.params.id}`);
+      res.status(200).json(next);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Dados invalidos para configuracao de estudo" });
+    }
+  });
+
+  app.get("/api/admin/studios/:id/study-allocation", requireAuth, requireAdmin, async (req, res) => {
+    const memberships = await storage.getStudioMemberships(req.params.id);
+    const profile = await storage.getStudioProfile(req.params.id);
+    const studyConfig = profile?.studyConfig || {};
+    const studyAllocations = profile?.studyAllocations || {};
+    const studyWaitlist: string[] = Array.isArray(profile?.studyWaitlist) ? profile.studyWaitlist : [];
+    const studyProgress = profile?.studyProgress || {};
+    const approved = memberships.filter((m: any) => m.status === "approved");
+    res.status(200).json({
+      config: studyConfig,
+      capacity: studyConfig?.capacity ?? null,
+      allocatedCount: Object.keys(studyAllocations).length,
+      waitlistCount: studyWaitlist.length,
+      allocatedUsers: approved
+        .filter((m: any) => studyAllocations[m.userId])
+        .map((m: any) => ({
+          userId: m.userId,
+          email: m.user?.email || null,
+          displayName: m.user?.displayName || m.user?.fullName || null,
+          allocation: studyAllocations[m.userId],
+          progress: studyProgress[m.userId] || null,
+        })),
+      waitlistUsers: approved
+        .filter((m: any) => studyWaitlist.includes(m.userId))
+        .map((m: any) => ({
+          userId: m.userId,
+          email: m.user?.email || null,
+          displayName: m.user?.displayName || m.user?.fullName || null,
+        })),
+    });
+  });
+
+  app.post("/api/admin/studios/:id/study-allocate/:userId", requireAuth, requireAdmin, async (req, res) => {
+    const memberships = await storage.getStudioMemberships(req.params.id);
+    const targetMembership = memberships.find((m: any) => m.userId === req.params.userId && m.status === "approved");
+    if (!targetMembership) return res.status(404).json({ message: "Usuario nao aprovado neste estudio" });
+    const profile = await storage.getStudioProfile(req.params.id);
+    const studyConfig = profile?.studyConfig || {};
+    const eligibilityRoles: string[] = Array.isArray(studyConfig?.eligibilityRoles) ? studyConfig.eligibilityRoles : ["aluno", "dublador"];
+    const membershipRoles = await storage.getUserStudioRoles(targetMembership.id);
+    const roleList = membershipRoles.map((r: any) => r.role);
+    const isEligible = roleList.some((role: string) => eligibilityRoles.includes(role));
+    if (!isEligible) {
+      return res.status(400).json({ message: "Usuario nao atende regras de elegibilidade para este estudo" });
+    }
+    const capacity = Number(studyConfig?.capacity || 0) || null;
+    const studyAllocations = { ...(profile?.studyAllocations || {}) } as Record<string, any>;
+    const waitlist: string[] = Array.isArray(profile?.studyWaitlist) ? [...profile.studyWaitlist] : [];
+    const now = new Date();
+    const deadlineDays = Number(studyConfig?.deadlineDays || 0) || null;
+    const deadlineAt = deadlineDays ? new Date(now.getTime() + deadlineDays * 24 * 60 * 60 * 1000).toISOString() : null;
+    if (!studyAllocations[req.params.userId] && capacity && Object.keys(studyAllocations).length >= capacity) {
+      if (!waitlist.includes(req.params.userId)) waitlist.push(req.params.userId);
+      await storage.upsertStudioProfile(req.params.id, { studyWaitlist: waitlist, studyAllocations });
+      await storage.createNotification({
+        userId: req.params.userId,
+        type: "study_waitlist",
+        title: "Estudo em fila de espera",
+        message: "Voce foi adicionado a fila de espera deste estudo por limite de vagas.",
+        isRead: false,
+        relatedId: req.params.id,
+      });
+      await logAdminAction(req, "ADD_STUDY_WAITLIST", `Usuario ${req.params.userId} entrou em fila no estudio ${req.params.id}`);
+      return res.status(200).json({ mode: "waitlist", waitlistCount: waitlist.length });
+    }
+    studyAllocations[req.params.userId] = {
+      allocatedAt: now.toISOString(),
+      deadlineAt,
+      status: "allocated",
+    };
+    const nextWaitlist = waitlist.filter((userId: string) => userId !== req.params.userId);
+    await storage.upsertStudioProfile(req.params.id, { studyAllocations, studyWaitlist: nextWaitlist });
+    if (studyConfig?.autoNotify !== false) {
+      await storage.createNotification({
+        userId: req.params.userId,
+        type: "study_assigned",
+        title: "Novo estudo disponível",
+        message: "Voce foi alocado em um novo estudo.",
+        isRead: false,
+        relatedId: req.params.id,
+      });
+    }
+    await logAdminAction(req, "ALLOCATE_USER_TO_STUDY", `Alocou usuario ${req.params.userId} no estudio ${req.params.id}`);
+    res.status(200).json({ mode: "allocated", allocation: studyAllocations[req.params.userId] });
+  });
+
+  app.post("/api/admin/studios/:id/study-unallocate/:userId", requireAuth, requireAdmin, async (req, res) => {
+    const profile = await storage.getStudioProfile(req.params.id);
+    const studyAllocations = { ...(profile?.studyAllocations || {}) } as Record<string, any>;
+    const waitlist: string[] = Array.isArray(profile?.studyWaitlist) ? [...profile.studyWaitlist] : [];
+    delete studyAllocations[req.params.userId];
+    const nextWaitlist = waitlist.filter((id: string) => id !== req.params.userId);
+    await storage.upsertStudioProfile(req.params.id, { studyAllocations, studyWaitlist: nextWaitlist });
+    await logAdminAction(req, "UNALLOCATE_USER_FROM_STUDY", `Desalocou usuario ${req.params.userId} do estudio ${req.params.id}`);
+    res.status(200).json({ ok: true });
+  });
+
+  app.put("/api/admin/studios/:id/study-progress/:userId", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const payload = z.object({ progress: z.number().min(0).max(100) }).parse(req.body || {});
+      const profile = await storage.getStudioProfile(req.params.id);
+      const progressMap = { ...(profile?.studyProgress || {}) } as Record<string, any>;
+      progressMap[req.params.userId] = { progress: payload.progress, updatedAt: new Date().toISOString() };
+      await storage.upsertStudioProfile(req.params.id, { studyProgress: progressMap });
+      await logAdminAction(req, "UPDATE_STUDY_PROGRESS", `Atualizou progresso de ${req.params.userId} para ${payload.progress}% no estudio ${req.params.id}`);
+      res.status(200).json(progressMap[req.params.userId]);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Dados invalidos para progresso" });
+    }
   });
 
   app.patch("/api/admin/studios/:id", requireAuth, requireAdmin, async (req, res) => {
@@ -1664,6 +2056,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(allSessions);
   });
 
+  app.get("/api/admin/sessions/active-by-user", requireAuth, requireAdmin, async (_req, res) => {
+    const allSessions = await storage.getAllSessions();
+    const activeSessions = allSessions.filter((session: any) => session.status === "active" || session.status === "in_progress");
+    const aggregate = new Map<string, { userId: string; sessions: any[] }>();
+    for (const session of activeSessions as any[]) {
+      const participants = await storage.getSessionParticipants(session.id);
+      for (const participant of participants as any[]) {
+        if (!aggregate.has(participant.userId)) {
+          aggregate.set(participant.userId, { userId: participant.userId, sessions: [] });
+        }
+        aggregate.get(participant.userId)!.sessions.push({
+          id: session.id,
+          title: session.title,
+          status: session.status,
+          scheduledAt: session.scheduledAt,
+        });
+      }
+    }
+    const userIds = Array.from(aggregate.keys());
+    const usersById = new Map<string, any>();
+    for (const userId of userIds) {
+      const user = await getUserById(userId);
+      if (user) usersById.set(userId, user);
+    }
+    res.status(200).json(
+      userIds.map((userId) => ({
+        userId,
+        userEmail: usersById.get(userId)?.email || null,
+        userDisplayName: usersById.get(userId)?.displayName || usersById.get(userId)?.fullName || null,
+        sessions: aggregate.get(userId)!.sessions,
+      }))
+    );
+  });
+
   app.patch("/api/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
       const updated = await storage.updateSession(req.params.id, req.body);
@@ -1676,11 +2102,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
+      const participants = await storage.getSessionParticipants(req.params.id);
+      const participantIds = Array.from(new Set((participants as any[]).map((p) => String(p.userId))));
       await storage.deleteSession(req.params.id);
+      const rows = await db.select().from(httpSessions);
+      const toDelete = (rows as any[])
+        .filter((row) => participantIds.includes(String(sessionUserIdFromPayload(row.sess) || "")))
+        .map((row) => row.sid);
+      for (const sid of toDelete) {
+        await db.delete(httpSessions).where(eq(httpSessions.sid, sid));
+      }
       await logAdminAction(req, "DELETE_SESSION", `Excluiu sessao ${req.params.id}`);
-      res.status(200).json({ ok: true });
+      res.status(200).json({ ok: true, forcedLogouts: toDelete.length });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Falha ao excluir sessao" });
+    }
+  });
+
+  app.post("/api/admin/sessions/cleanup-expired", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const allSessions = await storage.getAllSessions();
+      const now = Date.now();
+      let deleted = 0;
+      let completed = 0;
+      for (const session of allSessions as any[]) {
+        const scheduledAt = new Date(session.scheduledAt).getTime();
+        const ageDays = (now - scheduledAt) / (24 * 60 * 60 * 1000);
+        if ((session.status === "scheduled" || session.status === "in_progress") && ageDays > 1) {
+          await storage.updateSession(session.id, { status: "completed" });
+          completed += 1;
+        }
+        if ((session.status === "completed" || session.status === "cancelled") && ageDays > 30) {
+          await storage.deleteSession(session.id);
+          deleted += 1;
+        }
+      }
+      await logAdminAction(req, "CLEANUP_EXPIRED_SESSIONS", `Concluiu ${completed} e removeu ${deleted} sessoes expiradas`);
+      res.status(200).json({ completed, deleted });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Falha na limpeza de sessoes expiradas" });
     }
   });
 

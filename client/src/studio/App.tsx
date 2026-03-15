@@ -65,7 +65,7 @@ function ProtectedRoute({ component: Component, requireStudio = false, ...rest }
 
 function StudioSelectRoute() {
   const { user, isLoading } = useAuth();
-  const { data: autoEntry, isLoading: isAutoEntryLoading } = useStudioAutoEntry();
+  const { data: autoEntry, isLoading: isAutoEntryLoading } = useStudioAutoEntry(Boolean(user));
 
   if (isLoading || isAutoEntryLoading) {
     return (

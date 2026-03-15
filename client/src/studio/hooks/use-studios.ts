@@ -13,17 +13,18 @@ export function useStudios() {
   });
 }
 
-export function useStudioAutoEntry() {
+export function useStudioAutoEntry(enabled: boolean = true) {
   return useQuery({
     queryKey: [api.studios.autoEntry.path],
+    enabled,
     retry: false,
     queryFn: async () => {
       const res = await fetch(api.studios.autoEntry.path, { credentials: "include" });
-      if (res.status === 404) {
-        return { mode: "select", count: 0 } as const;
-      }
       if (res.status === 401) {
         throw new Error("Unauthorized");
+      }
+      if (res.status === 409) {
+        throw new Error("Nenhum estúdio vinculado ao usuário.");
       }
       if (!res.ok) {
         let message = res.statusText || "Erro ao validar auto-redirecionamento";

@@ -121,16 +121,31 @@ export function registerAuthRoutes(app: Express): void {
             ? await storage.getStudios()
             : await storage.getStudiosForUser(user.id);
           studioCount = baseStudios.length;
+          if (studioCount === 0) {
+            logger.error("User without studios during login", { userId: user.id, role: user.role });
+            return res.status(409).json({ message: "Nenhum estúdio vinculado ao usuário." });
+          }
           const decision = decideStudioAutoEntry(baseStudios);
+          if (decision.mode === "error") {
+            logger.error("Invalid auto-entry decision during login", {
+              userId: user.id,
+              studioCount,
+              message: decision.message,
+            });
+            return res.status(500).json({ message: "Falha ao resolver estúdio único para redirecionamento." });
+          }
           if (decision.mode === "redirect") {
             redirectTo = `/hub-dub/studio/${decision.studioId}/dashboard`;
             autoEntryMode = "redirect";
+          } else {
+            autoEntryMode = "select";
           }
         } catch (redirectErr) {
           logger.error("Error resolving login redirect", {
             userId: user?.id,
             error: String(redirectErr),
           });
+          return res.status(500).json({ message: "Falha ao resolver redirecionamento de login." });
         }
 
         return res.json({

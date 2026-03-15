@@ -7,7 +7,7 @@ import {
   LogOut, ChevronRight, Trash2, Pencil, Plus, RotateCcw,
   CheckCircle2, AlertCircle, Save, Search, RefreshCw,
   Eye, EyeOff, Activity, Database, BadgeCheck, XCircle,
-  UserCog, ToggleLeft, ToggleRight, Star
+  UserCog, ToggleLeft, ToggleRight, Star, Download
 } from "lucide-react";
 import { Button } from "@studio/components/ui/button";
 import { Input } from "@studio/components/ui/input";
@@ -342,6 +342,7 @@ function UsersSection() {
   const [assignUser, setAssignUser] = useState<any | null>(null);
   const [assignStudioId, setAssignStudioId] = useState("");
   const [assignRoles, setAssignRoles] = useState<string[]>([]);
+  const [activityUser, setActivityUser] = useState<any | null>(null);
 
   const { data: usersList = [], isLoading } = useQuery({
     queryKey: ["/api/admin/users"],
@@ -353,6 +354,12 @@ function UsersSection() {
     queryKey: ["/api/studios"],
     queryFn: () => authFetch("/api/studios") as Promise<any[]>,
     refetchInterval: 5000,
+  });
+
+  const { data: activityLogs = [] } = useQuery({
+    queryKey: ["/api/admin/users", activityUser?.id, "activity"],
+    enabled: Boolean(activityUser?.id),
+    queryFn: () => authFetch(`/api/admin/users/${activityUser.id}/activity`) as Promise<any[]>,
   });
 
   const changeRoleMut = useMutation({
@@ -405,13 +412,22 @@ function UsersSection() {
     u.displayName?.toLowerCase().includes(search.toLowerCase())
   );
 
+  const exportUsersCsv = () => {
+    window.open("/api/admin/users/export", "_blank", "noopener,noreferrer");
+  };
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 className="text-xl font-semibold">Gerenciamento de Usuarios</h2>
-        <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="button-create-user">
-          <Plus className="h-4 w-4 mr-2" /> Criar Usuario
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={exportUsersCsv} data-testid="button-export-users">
+            <Download className="h-4 w-4 mr-2" /> Exportar CSV
+          </Button>
+          <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="button-create-user">
+            <Plus className="h-4 w-4 mr-2" /> Criar Usuario
+          </Button>
+        </div>
       </div>
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -431,7 +447,9 @@ function UsersSection() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(user => (
+                {filtered.map(user => {
+                  const isMaster = String(user.email || "").toLowerCase() === "borbaggabriel@gmail.com";
+                  return (
                   <tr key={user.id} className="border-b border-white/6 last:border-0 hover:bg-white/3" data-testid={`row-user-${user.id}`}>
                     <td className="p-3">
                       <div className="font-medium">{user.displayName || user.fullName || "—"}</div>
@@ -441,6 +459,7 @@ function UsersSection() {
                       <Select
                         value={user.status}
                         onValueChange={v => changeStatusMut.mutate({ id: user.id, status: v })}
+                        disabled={isMaster}
                       >
                         <SelectTrigger className="h-7 w-28 text-xs" data-testid={`select-status-${user.id}`}>
                           <SelectValue />
@@ -456,6 +475,7 @@ function UsersSection() {
                       <Select
                         value={user.role}
                         onValueChange={v => changeRoleMut.mutate({ id: user.id, role: v })}
+                        disabled={isMaster}
                       >
                         <SelectTrigger className="h-7 w-36 text-xs" data-testid={`select-role-${user.id}`}>
                           <SelectValue />
@@ -481,13 +501,16 @@ function UsersSection() {
                         <Button size="icon" variant="ghost" title="Redefinir senha" onClick={() => setResetUser(user)} data-testid={`button-reset-pw-${user.id}`}>
                           <RotateCcw className="h-3.5 w-3.5" />
                         </Button>
-                        <Button size="icon" variant="ghost" title="Excluir" className="text-destructive hover:text-destructive" onClick={() => setDeleteConfirm(user)} data-testid={`button-delete-user-${user.id}`}>
+                        <Button size="icon" variant="ghost" title="Atividades" onClick={() => setActivityUser(user)} data-testid={`button-activity-user-${user.id}`}>
+                          <Activity className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button size="icon" variant="ghost" title="Excluir" className="text-destructive hover:text-destructive" onClick={() => setDeleteConfirm(user)} disabled={isMaster} data-testid={`button-delete-user-${user.id}`}>
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                )})}
                 {filtered.length === 0 && (
                   <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">Nenhum usuario encontrado</td></tr>
                 )}
@@ -657,6 +680,25 @@ function UsersSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!activityUser} onOpenChange={() => setActivityUser(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Historico de Atividades</DialogTitle>
+            <DialogDescription>{activityUser?.email}</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-80 overflow-y-auto space-y-2">
+            {!activityLogs.length && <div className="text-sm text-muted-foreground">Sem atividades registradas.</div>}
+            {activityLogs.map((log: any) => (
+              <div key={log.id} className="rounded-md border border-border p-2.5 text-xs space-y-1">
+                <div className="font-medium">{log.action}</div>
+                <div className="text-muted-foreground">{new Date(log.createdAt).toLocaleString()}</div>
+                <div className="text-muted-foreground break-words">{log.details}</div>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -670,6 +712,10 @@ function StudiosSection() {
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState({ name: "", studioAdminUserId: "" });
+  const [studyStudio, setStudyStudio] = useState<any | null>(null);
+  const [studyConfigForm, setStudyConfigForm] = useState({ capacity: "", deadlineDays: "", autoNotify: true, eligibilityRoles: "aluno,dublador" });
+  const [selectedAllocationUserId, setSelectedAllocationUserId] = useState("");
+  const [progressValue, setProgressValue] = useState("0");
 
   const { data: studiosList = [], isLoading } = useQuery({
     queryKey: ["/api/admin/studios"],
@@ -684,6 +730,24 @@ function StudiosSection() {
   });
 
   const approvedUsers = usersList.filter((u: any) => u.role !== "platform_owner" && u.status === "approved");
+
+  const { data: studyConfig } = useQuery({
+    queryKey: ["/api/admin/studios", studyStudio?.id, "study-config"],
+    enabled: Boolean(studyStudio?.id),
+    queryFn: () => authFetch(`/api/admin/studios/${studyStudio.id}/study-config`) as Promise<any>,
+  });
+
+  const { data: studyAllocation } = useQuery({
+    queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"],
+    enabled: Boolean(studyStudio?.id),
+    queryFn: () => authFetch(`/api/admin/studios/${studyStudio.id}/study-allocation`) as Promise<any>,
+  });
+
+  const { data: studyMembers = [] } = useQuery({
+    queryKey: ["/api/admin/studios", studyStudio?.id, "users"],
+    enabled: Boolean(studyStudio?.id),
+    queryFn: () => authFetch(`/api/admin/studios/${studyStudio.id}/users`) as Promise<any[]>,
+  });
 
   const createMut = useMutation({
     mutationFn: (data: { name: string; studioAdminUserId?: string }) =>
@@ -715,7 +779,51 @@ function StudiosSection() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/admin/studios"] }); toast({ title: "Estudio atualizado" }); },
   });
 
+  const saveStudyConfigMut = useMutation({
+    mutationFn: (payload: any) => authFetch(`/api/admin/studios/${studyStudio.id}/study-config`, { method: "PUT", body: JSON.stringify(payload) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-config"] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
+      toast({ title: "Configuracao de estudo atualizada" });
+    },
+    onError: (e: any) => toast({ title: e.message || "Falha ao salvar configuracao do estudo", variant: "destructive" }),
+  });
+
+  const allocateMut = useMutation({
+    mutationFn: (userId: string) => authFetch(`/api/admin/studios/${studyStudio.id}/study-allocate/${userId}`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
+      toast({ title: "Alocacao processada" });
+    },
+    onError: (e: any) => toast({ title: e.message || "Falha na alocacao", variant: "destructive" }),
+  });
+
+  const unallocateMut = useMutation({
+    mutationFn: (userId: string) => authFetch(`/api/admin/studios/${studyStudio.id}/study-unallocate/${userId}`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
+      toast({ title: "Usuario desalocado do estudo" });
+    },
+    onError: (e: any) => toast({ title: e.message || "Falha na desalocacao", variant: "destructive" }),
+  });
+
+  const progressMut = useMutation({
+    mutationFn: ({ userId, progress }: { userId: string; progress: number }) =>
+      authFetch(`/api/admin/studios/${studyStudio.id}/study-progress/${userId}`, { method: "PUT", body: JSON.stringify({ progress }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/studios", studyStudio?.id, "study-allocation"] });
+      toast({ title: "Progresso atualizado" });
+    },
+    onError: (e: any) => toast({ title: e.message || "Falha ao atualizar progresso", variant: "destructive" }),
+  });
+
   const filtered = studiosList.filter(s => s.name?.toLowerCase().includes(search.toLowerCase()));
+
+  const openStudyManager = (studio: any) => {
+    setStudyStudio(studio);
+    setSelectedAllocationUserId("");
+    setProgressValue("0");
+  };
 
   return (
     <div className="space-y-4">
@@ -766,6 +874,15 @@ function StudiosSection() {
                         </Button>
                         <Button size="icon" variant="ghost" title="Editar Estudio" onClick={() => { setEditStudio(studio); setEditForm({ name: studio.name, slug: studio.slug, isActive: studio.isActive }); }} data-testid={`button-edit-studio-${studio.id}`}>
                           <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Gerenciar Estudo"
+                          onClick={() => openStudyManager(studio)}
+                          data-testid={`button-study-manager-${studio.id}`}
+                        >
+                          <UserCog className="h-4 w-4" />
                         </Button>
                         <Button size="icon" variant="ghost" title="Excluir Estudio" className="text-destructive hover:bg-destructive/10" onClick={() => setDeleteConfirm(studio)} data-testid={`button-delete-studio-${studio.id}`}>
                           <Trash2 className="h-4 w-4" />
@@ -857,6 +974,132 @@ function StudiosSection() {
               {createMut.isPending ? "Criando..." : "Criar Estudio"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!studyStudio}
+        onOpenChange={(open) => {
+          if (!open) {
+            setStudyStudio(null);
+            setSelectedAllocationUserId("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Gestao de Estudo</DialogTitle>
+            <DialogDescription>{studyStudio?.name}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Capacidade</Label>
+                <Input
+                  type="number"
+                  value={studyConfigForm.capacity || String(studyConfig?.capacity ?? "")}
+                  onChange={(e) => setStudyConfigForm((f) => ({ ...f, capacity: e.target.value }))}
+                  data-testid="input-study-capacity"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Prazo (dias)</Label>
+                <Input
+                  type="number"
+                  value={studyConfigForm.deadlineDays || String(studyConfig?.deadlineDays ?? "")}
+                  onChange={(e) => setStudyConfigForm((f) => ({ ...f, deadlineDays: e.target.value }))}
+                  data-testid="input-study-deadline-days"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Papeis elegiveis (csv)</Label>
+              <Input
+                value={studyConfigForm.eligibilityRoles || String((studyConfig?.eligibilityRoles || []).join(","))}
+                onChange={(e) => setStudyConfigForm((f) => ({ ...f, eligibilityRoles: e.target.value }))}
+                data-testid="input-study-eligibility"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                checked={studyConfigForm.autoNotify}
+                onCheckedChange={(v) => setStudyConfigForm((f) => ({ ...f, autoNotify: Boolean(v) }))}
+                data-testid="check-study-auto-notify"
+              />
+              <span className="text-sm">Notificar alocacao automaticamente</span>
+            </div>
+            <Button
+              size="sm"
+              onClick={() =>
+                saveStudyConfigMut.mutate({
+                  capacity: studyConfigForm.capacity ? Number(studyConfigForm.capacity) : null,
+                  deadlineDays: studyConfigForm.deadlineDays ? Number(studyConfigForm.deadlineDays) : null,
+                  eligibilityRoles: String(studyConfigForm.eligibilityRoles || "").split(",").map((v) => v.trim()).filter(Boolean),
+                  autoNotify: studyConfigForm.autoNotify,
+                })
+              }
+              disabled={saveStudyConfigMut.isPending}
+              data-testid="button-save-study-config"
+            >
+              Salvar Configuracao
+            </Button>
+            <div className="rounded-md border border-border p-3 space-y-2">
+              <div className="text-sm font-semibold">Alocacao de Usuarios</div>
+              <div className="text-xs text-muted-foreground">
+                Alocados: {studyAllocation?.allocatedCount ?? 0} • Fila: {studyAllocation?.waitlistCount ?? 0}
+              </div>
+              <Select value={selectedAllocationUserId} onValueChange={setSelectedAllocationUserId}>
+                <SelectTrigger data-testid="select-study-user">
+                  <SelectValue placeholder="Selecionar usuario aprovado no estudo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {studyMembers.filter((m: any) => m.status === "approved").map((m: any) => (
+                    <SelectItem key={m.userId} value={m.userId}>
+                      {m.user?.displayName || m.user?.fullName || m.user?.email || m.userId}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => selectedAllocationUserId && allocateMut.mutate(selectedAllocationUserId)}
+                  disabled={!selectedAllocationUserId || allocateMut.isPending}
+                  data-testid="button-study-allocate"
+                >
+                  Alocar
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => selectedAllocationUserId && unallocateMut.mutate(selectedAllocationUserId)}
+                  disabled={!selectedAllocationUserId || unallocateMut.isPending}
+                  data-testid="button-study-unallocate"
+                >
+                  Desalocar
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={progressValue}
+                  onChange={(e) => setProgressValue(e.target.value)}
+                  data-testid="input-study-progress"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => selectedAllocationUserId && progressMut.mutate({ userId: selectedAllocationUserId, progress: Number(progressValue || 0) })}
+                  disabled={!selectedAllocationUserId || progressMut.isPending}
+                  data-testid="button-study-progress"
+                >
+                  Atualizar Progresso
+                </Button>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
@@ -1043,6 +1286,7 @@ function SessionsSection() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState({ studioId: "", productionId: "", title: "", scheduledAt: "", durationMinutes: "60" });
   const [search, setSearch] = useState("");
+  const [forceLogoutUserId, setForceLogoutUserId] = useState<string>("");
 
   const { data: sessData = [], isLoading } = useQuery({
     queryKey: ["/api/admin/sessions"],
@@ -1058,6 +1302,18 @@ function SessionsSection() {
   const { data: prodsList = [] } = useQuery({
     queryKey: ["/api/admin/productions"],
     queryFn: () => authFetch("/api/admin/productions") as Promise<any[]>,
+  });
+
+  const { data: activeSessionsByUser = [] } = useQuery({
+    queryKey: ["/api/admin/sessions/active-by-user"],
+    queryFn: () => authFetch("/api/admin/sessions/active-by-user") as Promise<any[]>,
+    refetchInterval: 5000,
+  });
+
+  const { data: authSessionsSummary = [] } = useQuery({
+    queryKey: ["/api/admin/auth-sessions/users"],
+    queryFn: () => authFetch("/api/admin/auth-sessions/users") as Promise<any[]>,
+    refetchInterval: 5000,
   });
 
   const deleteMut = useMutation({
@@ -1078,6 +1334,28 @@ function SessionsSection() {
     onError: (e: any) => toast({ title: e.message || "Falha ao criar", variant: "destructive" }),
   });
 
+  const cleanupSessionsMut = useMutation({
+    mutationFn: () => authFetch("/api/admin/sessions/cleanup-expired", { method: "POST" }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/admin/sessions"] }); toast({ title: "Limpeza de sessoes concluida" }); },
+    onError: (e: any) => toast({ title: e.message || "Falha ao limpar sessoes", variant: "destructive" }),
+  });
+
+  const cleanupAuthMut = useMutation({
+    mutationFn: () => authFetch("/api/admin/auth-sessions/cleanup-expired", { method: "POST" }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/admin/auth-sessions/users"] }); toast({ title: "Sessoes web expiradas removidas" }); },
+    onError: (e: any) => toast({ title: e.message || "Falha ao limpar sessoes web", variant: "destructive" }),
+  });
+
+  const forceLogoutMut = useMutation({
+    mutationFn: (userId: string) => authFetch(`/api/admin/auth-sessions/force-logout-user/${userId}`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/auth-sessions/users"] });
+      toast({ title: "Logout forcado aplicado" });
+      setForceLogoutUserId("");
+    },
+    onError: (e: any) => toast({ title: e.message || "Falha no logout forcado", variant: "destructive" }),
+  });
+
   const filtered = sessData.filter(s => s.title?.toLowerCase().includes(search.toLowerCase()));
 
   const filteredProds = createForm.studioId
@@ -1095,9 +1373,61 @@ function SessionsSection() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Gerenciamento de Sessoes</h2>
-        <Button onClick={() => setCreateOpen(true)} data-testid="button-create-session">
-          <Plus className="h-4 w-4 mr-1.5" /> Nova Sessao
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => cleanupSessionsMut.mutate()} disabled={cleanupSessionsMut.isPending} data-testid="button-cleanup-expired-sessions">
+            <RefreshCw className="h-4 w-4 mr-1.5" /> Limpar Expiradas
+          </Button>
+          <Button onClick={() => setCreateOpen(true)} data-testid="button-create-session">
+            <Plus className="h-4 w-4 mr-1.5" /> Nova Sessao
+          </Button>
+        </div>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="vhub-card p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Sessoes Ativas por Usuario</h3>
+            <Badge variant="outline">{activeSessionsByUser.length}</Badge>
+          </div>
+          <div className="max-h-40 overflow-y-auto space-y-2">
+            {activeSessionsByUser.length === 0 && <div className="text-xs text-muted-foreground">Sem usuarios com sessao ativa.</div>}
+            {activeSessionsByUser.map((item: any) => (
+              <div key={item.userId} className="rounded-md border border-border p-2">
+                <div className="text-xs font-medium">{item.userDisplayName || item.userEmail || item.userId}</div>
+                <div className="text-[11px] text-muted-foreground">{item.sessions.length} sessao(oes) ativa(s)</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="vhub-card p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Sessoes Web Ativas</h3>
+            <Button size="sm" variant="outline" onClick={() => cleanupAuthMut.mutate()} disabled={cleanupAuthMut.isPending} data-testid="button-cleanup-auth-sessions">
+              Limpar Expiradas
+            </Button>
+          </div>
+          <div className="space-y-2">
+            <Select value={forceLogoutUserId} onValueChange={setForceLogoutUserId}>
+              <SelectTrigger data-testid="select-force-logout-user"><SelectValue placeholder="Selecionar usuario para logout forcado" /></SelectTrigger>
+              <SelectContent>
+                {authSessionsSummary.map((item: any) => (
+                  <SelectItem key={item.userId} value={item.userId}>
+                    {(item.userDisplayName || item.userEmail || item.userId) + ` (${item.sessions})`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              className="w-full"
+              variant="destructive"
+              disabled={!forceLogoutUserId || forceLogoutMut.isPending}
+              onClick={() => forceLogoutMut.mutate(forceLogoutUserId)}
+              data-testid="button-force-logout-user"
+            >
+              Logout Forcado do Usuario
+            </Button>
+          </div>
+        </div>
       </div>
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />

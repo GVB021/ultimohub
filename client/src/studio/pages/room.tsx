@@ -653,6 +653,8 @@ export default function RecordingRoom() {
   const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const previewAudioRef = useRef<HTMLAudioElement>(null);
+  const recordingsPreviewAudioRef = useRef<HTMLAudioElement>(null);
+  const [recordingsPreviewId, setRecordingsPreviewId] = useState<string | null>(null);
 
   const [takesPopupOpen, setTakesPopupOpen] = useState(false);
   const [takePreviewId, setTakePreviewId] = useState<string | null>(null);
@@ -679,8 +681,10 @@ export default function RecordingRoom() {
   const isPrivileged = isDirector || user?.role === "platform_owner";
   const scopedRecordings = useMemo(() => {
     const source = Array.isArray(recordingsList) ? recordingsList : [];
-    if (isPrivileged && recordingsScope === "all") return source;
-    return source.filter((take: any) => String(take.voiceActorId || "") === String(user?.id || "") || String(take.userId || "") === String(user?.id || ""));
+    const filtered = (isPrivileged && recordingsScope === "all")
+      ? source
+      : source.filter((take: any) => String(take.voiceActorId || "") === String(user?.id || "") || String(take.userId || "") === String(user?.id || ""));
+    return [...filtered].sort((a: any, b: any) => new Date(String(b.createdAt || 0)).getTime() - new Date(String(a.createdAt || 0)).getTime());
   }, [recordingsList, isPrivileged, recordingsScope, user?.id]);
   const isApproverRole = useCallback((role: string | undefined | null) => {
     if (!role) return false;
@@ -1027,10 +1031,15 @@ export default function RecordingRoom() {
     if (!recordingProfile) {
       throw new Error("Perfil de gravação não configurado.");
     }
+    logAudioStep("upload-started", {
+      lineIndex: input.lineIndex,
+      durationSeconds: input.durationSeconds,
+      autoApprove: input.autoApprove,
+    });
     const formData = new FormData();
     formData.append("audio", input.wavBlob, `take_${sessionId}_${Date.now()}.wav`);
     formData.append("characterId", recordingProfile.characterId);
-    formData.append("voiceActorId", recordingProfile.voiceActorId || user?.id || "");
+    formData.append("voiceActorId", user?.id || recordingProfile.voiceActorId || "");
     formData.append("lineIndex", String(input.lineIndex));
     formData.append("durationSeconds", String(input.durationSeconds));
     formData.append("startTimeSeconds", String(input.startTimeSeconds));
@@ -1042,11 +1051,39 @@ export default function RecordingRoom() {
       method: "POST",
       body: formData,
     });
+    if (!take?.id || !take?.audioUrl) {
+      throw new Error("Persistência inválida: resposta de take incompleta.");
+    }
     setLastUploadedTakeId(take.id);
+    logAudioStep("upload-created", { takeId: take.id, audioUrl: take.audioUrl, lineIndex: input.lineIndex });
+    const localRecord = {
+      ...take,
+      characterName: recordingProfile.characterName || null,
+      voiceActorName: recordingProfile.voiceActorName || user?.displayName || user?.fullName || null,
+      status: input.autoApprove ? "approved" : "pending",
+      takeVersion: 1,
+      createdAt: take.createdAt || new Date().toISOString(),
+    };
+    queryClient.setQueryData(["/api/sessions", sessionId, "recordings"], (prev: any) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const without = list.filter((item: any) => item.id !== localRecord.id);
+      return [localRecord, ...without];
+    });
+    queryClient.setQueryData(["/api/sessions", sessionId, "takes"], (prev: any) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const without = list.filter((item: any) => item.id !== take.id);
+      return [take, ...without];
+    });
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
     await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
+    const recordingsAfterSave = await authFetch(`/api/sessions/${sessionId}/recordings`);
+    const persisted = Array.isArray(recordingsAfterSave) && recordingsAfterSave.some((item: any) => item.id === take.id);
+    logAudioStep("upload-integrity-check", { takeId: take.id, persisted });
+    if (!persisted) {
+      throw new Error("Persistência inválida: take não encontrado na aba de gravações.");
+    }
     return take;
-  }, [recordingProfile, sessionId, user?.id, queryClient]);
+  }, [recordingProfile, sessionId, user?.id, user?.displayName, user?.fullName, queryClient, logAudioStep]);
 
   const startCountdown = useCallback(() => {
     if (recordingStatus !== "idle" || !micState) return;
@@ -1138,13 +1175,17 @@ export default function RecordingRoom() {
       } else {
         toast({ title: isDirector ? "Take recebido para aprovação" : "Take enviado para aprovação" });
       }
+      setRecordingStatus("idle");
+      setLastRecording(null);
+      setQualityMetrics(null);
     } catch (err: any) {
+      logAudioStep("upload-error", { message: String(err?.message || err) });
       try {
         const wavBlob = wavToBlob(encodeWav(result.samples));
         await enqueuePendingUpload({
           dataUrl: await blobToBase64(wavBlob),
           characterId: recordingProfile?.characterId || "",
-          voiceActorId: recordingProfile?.voiceActorId || user?.id || "",
+          voiceActorId: user?.id || recordingProfile?.voiceActorId || "",
           lineIndex: currentLine,
           durationSeconds: result.durationSeconds,
           startTimeSeconds: Number(videoRef.current?.currentTime || 0),
@@ -1152,8 +1193,14 @@ export default function RecordingRoom() {
           isPreferred: !hasApproverPresent && !isPrivileged,
         });
         toast({ title: "Sem conexão. Take salvo no cache local para reenvio automático.", variant: "destructive" });
+        setRecordingStatus("idle");
+        setLastRecording(null);
+        setQualityMetrics(null);
       } catch {}
       toast({ title: "Erro ao enviar take", description: String(err?.message || err), variant: "destructive" });
+      setRecordingStatus("idle");
+      setLastRecording(null);
+      setQualityMetrics(null);
     } finally {
       setIsSaving(false);
     }
@@ -1558,23 +1605,57 @@ export default function RecordingRoom() {
             <div className="px-6 py-4 max-h-[420px] overflow-y-auto custom-scrollbar">
               <div className="grid grid-cols-12 text-[10px] uppercase text-muted-foreground tracking-wider pb-2 border-b border-border/60">
                 <span className="col-span-2">Linha</span>
-                <span className="col-span-4">Personagem</span>
+                <span className="col-span-3">Personagem</span>
                 <span className="col-span-2">Versão</span>
                 <span className="col-span-2">Status</span>
-                <span className="col-span-2 text-right">Duração</span>
+                <span className="col-span-1 text-right">Duração</span>
+                <span className="col-span-2 text-right">Ações</span>
               </div>
               <div className="space-y-1 mt-2">
                 {scopedRecordings.map((take: any) => (
                   <div key={take.id} className="grid grid-cols-12 items-center text-xs py-2 px-2 rounded-md hover:bg-muted/40">
                     <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
-                    <span className="col-span-4 truncate">{take.characterName || "-"}</span>
+                    <span className="col-span-3 truncate">{take.characterName || "-"}</span>
                     <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
                     <span className={cn("col-span-2", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
                       {take.status === "approved" ? "Aprovado" : "Pendente"}
                     </span>
-                    <span className="col-span-2 text-right font-mono text-muted-foreground">
+                    <span className="col-span-1 text-right font-mono text-muted-foreground">
                       {take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : "-"}
                     </span>
+                    <div className="col-span-2 flex items-center justify-end gap-1.5">
+                      <button
+                        onClick={async () => {
+                          const audio = recordingsPreviewAudioRef.current;
+                          if (!audio) return;
+                          if (recordingsPreviewId === take.id && !audio.paused) {
+                            audio.pause();
+                            setRecordingsPreviewId(null);
+                            return;
+                          }
+                          audio.src = `/api/takes/${take.id}/stream`;
+                          try {
+                            await audio.play();
+                            setRecordingsPreviewId(take.id);
+                          } catch {
+                            toast({ title: "Erro ao reproduzir take", variant: "destructive" });
+                          }
+                        }}
+                        className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
+                        title="Reproduzir take"
+                        data-testid={`button-play-recording-${take.id}`}
+                      >
+                        {recordingsPreviewId === take.id ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+                      </button>
+                      <button
+                        onClick={() => handleDownloadTake(take)}
+                        className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
+                        title="Baixar take"
+                        data-testid={`button-download-recording-${take.id}`}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {scopedRecordings.length === 0 && (
@@ -1622,6 +1703,11 @@ export default function RecordingRoom() {
       )}
 
       <audio ref={previewAudioRef} preload="none" />
+      <audio
+        ref={recordingsPreviewAudioRef}
+        preload="none"
+        onEnded={() => setRecordingsPreviewId(null)}
+      />
 
       <header className="shrink-0 flex items-center justify-between px-3 h-12 sm:h-14 relative z-20" style={{ background: "hsl(var(--background) / 0.90)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid hsl(var(--border) / 0.9)" }}>
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">

@@ -10,6 +10,12 @@ import { MeshGradient } from "@/components/landing/MeshGradient";
 import { LanguageThemePill } from "@/components/nav/LanguageThemePill";
 import { maskBirthDate, maskBrazilWhatsapp, validateSimplifiedRegisterInput, normalizeEmail } from "@shared/register-validation";
 
+function sanitizeRedirectTarget(target: unknown): string {
+  const value = String(target || "").trim();
+  if (!value.startsWith("/hub-dub/")) return "/hub-dub/studios";
+  return value;
+}
+
 export default function Login() {
   const [lang, setLang] = useState<"en" | "pt">(() => {
     const saved = localStorage.getItem("vhub_language");
@@ -80,7 +86,7 @@ export default function Login() {
   useEffect(() => {
     if (user && !isLoggingIn) {
       const timer = setTimeout(() => {
-        setLocation(redirectToAfterAuth || "/hub-dub/studios", { replace: true });
+        setLocation(sanitizeRedirectTarget(redirectToAfterAuth), { replace: true });
       }, 1000);
       return () => clearTimeout(timer);
     }
@@ -143,7 +149,7 @@ export default function Login() {
       { email: email.trim(), password },
       {
         onSuccess: (data: any) => {
-          setRedirectToAfterAuth(data?.redirectTo || "/hub-dub/studios");
+          setRedirectToAfterAuth(sanitizeRedirectTarget(data?.redirectTo));
           setIsSuccess(true);
           toast({ title: lang === "en" ? "Welcome back!" : "Bem-vindo de volta!" });
         },
@@ -181,7 +187,7 @@ export default function Login() {
       },
       {
         onSuccess: (data: any) => {
-          setRedirectToAfterAuth(data?.redirectTo || `/hub-dub/studio/${registerForm.studioId}/dashboard`);
+          setRedirectToAfterAuth(sanitizeRedirectTarget(data?.redirectTo || `/hub-dub/studio/${registerForm.studioId}/dashboard`));
           setIsSuccess(true);
           toast({ title: "Conta criada com sucesso!" });
         },
