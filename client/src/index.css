@@ -6,6 +6,7 @@
 
 @layer base {
   :root {
+    color-scheme: light;
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
 
@@ -138,12 +139,6 @@
     -moz-osx-font-smoothing: grayscale;
     position: relative;
     min-height: 100vh;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-    }
   }
 
   code, pre, kbd, samp {

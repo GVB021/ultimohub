@@ -40,7 +40,7 @@ export function initThemeMode() {
   window.addEventListener("popstate", () => applyTheme("light"));
 }
 
-export function toggleTheme() {
+export function toggleTheme(): Theme {
   // Disabled as per requirements: force light mode globally except Room
   return "light";
 }

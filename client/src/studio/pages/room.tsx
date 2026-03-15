@@ -997,7 +997,7 @@ export default function RecordingRoom() {
       {/* Cinematic Background */}
       <div className="fixed inset-0 z-0 pointer-events-none">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/5 via-background to-background opacity-50"></div>
-        <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] bg-repeat opacity-[0.02] dark:opacity-[0.05]"></div>
+        <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] bg-repeat opacity-[0.05]"></div>
       </div>
 
       {countdownValue > 0 && (prerollInitiatorUserId === user?.id || isDirector) && (

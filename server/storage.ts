@@ -502,31 +502,67 @@ export class DatabaseStorage implements IStorage {
   async getStudioAdmins(studioId: string): Promise<User[]> {
     const memberships = await db.select().from(studioMemberships)
       .where(and(eq(studioMemberships.studioId, studioId), eq(studioMemberships.status, "approved")));
-    const adminUsers: User[] = [];
-    for (const m of memberships) {
-      const roles = await db.select({ role: userStudioRoles.role })
-        .from(userStudioRoles)
-        .where(eq(userStudioRoles.membershipId, m.id));
-      const isAdmin = roles.some(r => r.role === "studio_admin") || m.role === "studio_admin";
-      if (isAdmin) {
-        const [user] = await db.select().from(users).where(eq(users.id, m.userId));
-        if (user) adminUsers.push(user);
-      }
+    if (memberships.length === 0) return [];
+
+    const membershipIds = memberships.map((m) => m.id);
+    const roles = await db
+      .select({ membershipId: userStudioRoles.membershipId, role: userStudioRoles.role })
+      .from(userStudioRoles)
+      .where(inArray(userStudioRoles.membershipId, membershipIds));
+
+    const roleMap = new Map<string, Set<string>>();
+    for (const row of roles) {
+      if (!roleMap.has(row.membershipId)) roleMap.set(row.membershipId, new Set<string>());
+      roleMap.get(row.membershipId)!.add(row.role);
     }
-    return adminUsers;
+
+    const adminUserIds = Array.from(
+      new Set(
+        memberships
+          .filter((m) => m.role === "studio_admin" || roleMap.get(m.id)?.has("studio_admin"))
+          .map((m) => m.userId),
+      ),
+    );
+
+    if (adminUserIds.length === 0) return [];
+    return await db.select().from(users).where(inArray(users.id, adminUserIds));
   }
 
   async getPendingUsersWithStudioInfo(): Promise<any[]> {
     const pendingUsersList = await db.select().from(users).where(eq(users.status, "pending"));
-    const result = await Promise.all(pendingUsersList.map(async (u) => {
-      const memberships = await db.select().from(studioMemberships).where(eq(studioMemberships.userId, u.id));
-      const studioInfo = await Promise.all(memberships.map(async (m) => {
-        const [studio] = await db.select().from(studios).where(eq(studios.id, m.studioId));
-        return { membershipId: m.id, studioId: m.studioId, studioName: studio?.name || "Desconhecido", membershipStatus: m.status };
-      }));
-      return { ...u, studioMemberships: studioInfo };
-    }));
-    return result;
+    if (pendingUsersList.length === 0) return [];
+
+    const userIds = pendingUsersList.map((u) => u.id);
+    const memberships = await db
+      .select()
+      .from(studioMemberships)
+      .where(inArray(studioMemberships.userId, userIds));
+
+    const studioIds = Array.from(new Set(memberships.map((m) => m.studioId)));
+    const studioRows = studioIds.length
+      ? await db.select({ id: studios.id, name: studios.name }).from(studios).where(inArray(studios.id, studioIds))
+      : [];
+    const studioNameById = new Map(studioRows.map((s) => [s.id, s.name]));
+
+    const membershipsByUser = new Map<string, typeof memberships>();
+    for (const membership of memberships) {
+      const list = membershipsByUser.get(membership.userId) || [];
+      list.push(membership);
+      membershipsByUser.set(membership.userId, list);
+    }
+
+    return pendingUsersList.map((u) => {
+      const userMemberships = membershipsByUser.get(u.id) || [];
+      return {
+        ...u,
+        studioMemberships: userMemberships.map((m) => ({
+          membershipId: m.id,
+          studioId: m.studioId,
+          studioName: studioNameById.get(m.studioId) || "Desconhecido",
+          membershipStatus: m.status,
+        })),
+      };
+    });
   }
 
   async getStudioMemberships(studioId: string): Promise<(StudioMembership & { user?: User })[]> {
