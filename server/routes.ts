@@ -219,6 +219,17 @@ async function verifySessionAccess(req: Request, res: Response, sessionId: strin
   return session;
 }
 
+async function canManageSessionTakes(user: any, sessionId: string, studioId: string): Promise<boolean> {
+  const platformRole = normalizePlatformRole(user?.role);
+  if (platformRole === "platform_owner") return true;
+  const studioRoles = await storage.getUserRolesInStudio(user.id, studioId);
+  if (studioRoles.includes("studio_admin")) return true;
+  const participants = await storage.getSessionParticipants(sessionId);
+  const self = participants.find((p) => p.userId === user.id);
+  if (!self) return false;
+  return self.role === "director" || self.role === "diretor" || self.role === "studio_admin";
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
   // NOTIFICATIONS
@@ -986,7 +997,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const session = await verifySessionAccess(req, res, req.params.sessionId);
     if (!session) return;
     const takesList = await storage.getTakes(req.params.sessionId);
-    res.status(200).json(takesList);
+    const canManage = await canManageSessionTakes((req as any).user, req.params.sessionId, session.studioId);
+    if (canManage) {
+      res.status(200).json(takesList);
+      return;
+    }
+    res.status(200).json(takesList.filter((take) => take.isPreferred));
   });
 
   app.post("/api/takes/:id/prefer", requireAuth, async (req, res) => {
@@ -995,7 +1011,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!takeRecord) return res.status(404).json({ message: "Take nao encontrado" });
       const session = await verifySessionAccess(req, res, takeRecord.sessionId);
       if (!session) return;
+      const user = (req as any).user!;
+      const canManage = await canManageSessionTakes(user, takeRecord.sessionId, session.studioId);
+      if (!canManage) return res.status(403).json({ message: "Somente diretor pode aprovar takes" });
       const take = await storage.setPreferredTake(req.params.id);
+      await storage.createAuditLog({
+        userId: user.id,
+        action: "take.approved",
+        details: JSON.stringify({
+          takeId: take.id,
+          sessionId: take.sessionId,
+          lineIndex: take.lineIndex,
+          approvedAt: new Date().toISOString(),
+        }),
+      });
       res.status(200).json(take);
     } catch (err) {
       res.status(404).json({ message: "Take nao encontrado" });
@@ -1046,15 +1075,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (takeList.length === 0) return res.status(404).json({ message: "Take nao encontrado" });
       const take = takeList[0];
       const user = (req as any).user!;
-      if (user.role !== "platform_owner") {
-        const isOwner = String(take.voiceActorId || "") === String(user.id || "");
-        if (!isOwner) {
-          const roles = await storage.getUserRolesInStudio(user.id, take.studioId);
-          if (!roles.includes("studio_admin")) {
-            return res.status(403).json({ message: "Acesso negado" });
-          }
-        }
+      const canManage = await canManageSessionTakes(user, take.sessionId, take.studioId);
+      if (!canManage) {
+        return res.status(403).json({ message: "Acesso restrito ao diretor" });
       }
+      if (!canManage) return res.status(403).json({ message: "Acesso negado" });
       const filename = filenameFromAudioUrl(take.audioUrl, "take.wav").replace(/[^a-zA-Z0-9_.\-]/g, "_");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
@@ -1087,15 +1112,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (takeList.length === 0) return res.status(404).json({ message: "Take nao encontrado" });
       const take = takeList[0];
       const user = (req as any).user!;
-      if (user.role !== "platform_owner") {
-        const isOwner = String(take.voiceActorId || "") === String(user.id || "");
-        if (!isOwner) {
-          const roles = await storage.getUserRolesInStudio(user.id, take.studioId);
-          if (!roles.includes("studio_admin")) {
-            return res.status(403).json({ message: "Acesso negado" });
-          }
-        }
+      const canManage = await canManageSessionTakes(user, take.sessionId, take.studioId);
+      if (!canManage) {
+        return res.status(403).json({ message: "Acesso restrito ao diretor" });
       }
+      if (!canManage) return res.status(403).json({ message: "Acesso negado" });
 
       const filePath = safeAudioPath(take.audioUrl);
       if (filePath && fs.existsSync(filePath)) {

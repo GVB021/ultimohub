@@ -1,6 +1,7 @@
 import type { MicrophoneState } from "./microphoneManager";
 
-const BUFFER_SIZE = 4096;
+const MIN_BUFFER_SIZE = 512;
+const TARGET_BUFFER_SIZE = 512;
 
 export type RecordingStatus =
   | "idle"
@@ -58,7 +59,7 @@ export function startCapture(micState: MicrophoneState): void {
 
   // Fallback / Standard capture
   scriptProcessorNode = micState.audioContext.createScriptProcessor(
-    BUFFER_SIZE,
+    Math.max(MIN_BUFFER_SIZE, TARGET_BUFFER_SIZE),
     1,
     1
   );
@@ -75,7 +76,7 @@ export function startCapture(micState: MicrophoneState): void {
   scriptProcessorNode.connect(micState.audioContext.destination);
   console.info("[AudioPipeline][Capture] script-processor-started", {
     sampleRate: micState.audioContext.sampleRate,
-    bufferSize: BUFFER_SIZE,
+    bufferSize: Math.max(MIN_BUFFER_SIZE, TARGET_BUFFER_SIZE),
   });
 }
 

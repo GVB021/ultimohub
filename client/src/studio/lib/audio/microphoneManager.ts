@@ -79,7 +79,7 @@ export async function requestMicrophone(
 
   const audioContext = new AudioContext({ 
     sampleRate: SAMPLE_RATE,
-    latencyHint: isHighFidelity ? "interactive" : "balanced"
+    latencyHint: "interactive"
   });
   
   if (isHighFidelity) {
@@ -191,4 +191,10 @@ export function releaseMicrophone(): void {
 
 export function getMicState(): MicrophoneState | null {
   return currentState;
+}
+
+export function getEstimatedInputLatencyMs(state: MicrophoneState): number {
+  const baseLatency = Number(state.audioContext.baseLatency || 0);
+  const outputLatency = Number((state.audioContext as any).outputLatency || 0);
+  return (baseLatency + outputLatency) * 1000;
 }

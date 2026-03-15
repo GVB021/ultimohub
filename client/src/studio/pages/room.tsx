@@ -26,6 +26,10 @@ import {
   Download,
   Loader2,
   Menu,
+  Headphones,
+  Search,
+  Plus,
+  Save,
 } from "lucide-react";
 import { useToast } from "@studio/hooks/use-toast";
 import { useAuth } from "@studio/hooks/use-auth";
@@ -33,6 +37,7 @@ import {
   requestMicrophone,
   releaseMicrophone,
   setGain,
+  getEstimatedInputLatencyMs,
   type MicrophoneState,
   type VoiceCaptureMode,
 } from "@studio/lib/audio/microphoneManager";
@@ -410,8 +415,17 @@ export default function RecordingRoom() {
   const [volumeOverlay, setVolumeOverlay] = useState<number | null>(null);
   const [speedOverlay, setSpeedOverlay] = useState<number | null>(null);
   const [charSelectorOpen, setCharSelectorOpen] = useState(false);
+  const [characterSearch, setCharacterSearch] = useState("");
+  const [actorDraftName, setActorDraftName] = useState("");
+  const [newCharacterName, setNewCharacterName] = useState("");
+  const [approvalModalTakeId, setApprovalModalTakeId] = useState<string | null>(null);
+  const [approvalFinalStep, setApprovalFinalStep] = useState(false);
+  const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
+  const [actorHistory, setActorHistory] = useState<string[]>([]);
+  const [characterHistory, setCharacterHistory] = useState<string[]>([]);
   const lastTapRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const countdownTimerRef = useRef<number | null>(null);
 
   const handleCharacterChange = (char: { id: string; name: string; voiceActorId: string | null }) => {
     if (!recordingProfile) return;
@@ -426,6 +440,36 @@ export default function RecordingRoom() {
     setCharSelectorOpen(false);
     toast({ title: `Personagem alterado para ${char.name}` });
   };
+
+  useEffect(() => {
+    if (!sessionId) return;
+    try {
+      const actorsRaw = localStorage.getItem(`vhub_actor_history_${sessionId}`);
+      const charsRaw = localStorage.getItem(`vhub_character_history_${sessionId}`);
+      setActorHistory(actorsRaw ? JSON.parse(actorsRaw) : []);
+      setCharacterHistory(charsRaw ? JSON.parse(charsRaw) : []);
+    } catch {
+      setActorHistory([]);
+      setCharacterHistory([]);
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    setActorDraftName(recordingProfile?.voiceActorName || "");
+  }, [recordingProfile?.voiceActorName]);
+
+  const pushToHistory = useCallback((key: string, value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    try {
+      const existingRaw = localStorage.getItem(key);
+      const existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
+      const next = [normalized, ...existing.filter((item) => item !== normalized)].slice(0, 12);
+      localStorage.setItem(key, JSON.stringify(next));
+      if (key.includes("actor_history")) setActorHistory(next);
+      if (key.includes("character_history")) setCharacterHistory(next);
+    } catch {}
+  }, []);
 
   const handleVideoTouchStart = (e: React.TouchEvent) => {
     const touch = e.touches[0];
@@ -467,6 +511,23 @@ export default function RecordingRoom() {
   const { data: session, isLoading: sessionLoading, isError: sessionError } = useSessionData(studioId, sessionId);
   const { data: production, isLoading: productionLoading } = useProductionScript(studioId, session?.productionId);
   const { data: charactersList } = useCharactersList(session?.productionId);
+  const handleQuickCreateCharacter = useCallback(async () => {
+    if (!session?.productionId) return;
+    const name = newCharacterName.trim();
+    if (!name) return;
+    try {
+      const created = await authFetch(`/api/productions/${session.productionId}/characters`, {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/productions", session.productionId, "characters"] });
+      pushToHistory(`vhub_character_history_${sessionId}`, name);
+      setNewCharacterName("");
+      toast({ title: `Personagem ${created.name} cadastrado` });
+    } catch (err: any) {
+      toast({ title: "Falha ao cadastrar personagem", description: String(err?.message || err), variant: "destructive" });
+    }
+  }, [session, newCharacterName, queryClient, pushToHistory, sessionId, toast]);
 
   const scriptLines: ScriptLine[] = (() => {
     if (!production?.scriptJson) return [];
@@ -515,14 +576,23 @@ export default function RecordingRoom() {
 
   const { data: takesList = [] } = useTakesList(sessionId);
   const takeCount = takesList.length;
+  const pendingApprovalTakes = useMemo(() => takesList.filter((take: any) => !take.isPreferred), [takesList]);
 
   const savedTakes = useMemo(() => {
     const s = new Set<number>();
     takesList.forEach((t: any) => {
-      if (t.isDone) s.add(t.lineIndex);
+      if (t.isDone || t.isPreferred) s.add(t.lineIndex);
     });
     return s;
   }, [takesList]);
+
+  const handleApproveTake = useCallback(async (takeId: string) => {
+    await authFetch(`/api/takes/${takeId}/prefer`, { method: "POST" });
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    toast({ title: "Take aprovado e salvo pelo diretor" });
+    setApprovalModalTakeId(null);
+    setApprovalFinalStep(false);
+  }, [queryClient, sessionId, toast]);
 
   const [videoTime, setVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -772,9 +842,18 @@ export default function RecordingRoom() {
         setMicState(state);
         setMicReady(true);
         setGain(state, deviceSettings.inputGain);
+        const latencyMs = getEstimatedInputLatencyMs(state);
+        if (latencyMs > 10) {
+          toast({
+            title: "Latência de entrada acima da meta",
+            description: `Latência atual ${latencyMs.toFixed(2)}ms. Use modo high-fidelity e feche apps de áudio.`,
+            variant: "destructive",
+          });
+        }
         logAudioStep("microphone-ready", {
           sampleRate: state.audioContext.sampleRate,
           captureMode: state.captureMode,
+          latencyMs,
         });
       })
       .catch((err) => {
@@ -790,38 +869,78 @@ export default function RecordingRoom() {
     };
   }, [deviceSettings.inputDeviceId, deviceSettings.voiceCaptureMode, deviceSettings.inputGain, deviceSettingsOpen, toast, logAudioStep]);
 
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) {
+        window.clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const uploadTakeForDirector = useCallback(async (result: RecordingResult, metrics: QualityMetrics | null) => {
+    if (!recordingProfile) {
+      throw new Error("Perfil de gravação não configurado.");
+    }
+    const wavBuffer = encodeWav(result.samples);
+    const wavBlob = wavToBlob(wavBuffer);
+    const formData = new FormData();
+    formData.append("audio", wavBlob, `take_${sessionId}_${Date.now()}.wav`);
+    formData.append("characterId", recordingProfile.characterId);
+    formData.append("voiceActorId", recordingProfile.voiceActorId || user?.id || "");
+    formData.append("lineIndex", String(currentLine));
+    formData.append("durationSeconds", String(result.durationSeconds));
+    formData.append("startTimeSeconds", String(videoRef.current?.currentTime || 0));
+    if (metrics) {
+      formData.append("qualityScore", String(metrics.score));
+    }
+    const take = await authFetch(`/api/sessions/${sessionId}/takes`, {
+      method: "POST",
+      body: formData,
+    });
+    setLastUploadedTakeId(take.id);
+    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
+    pushToHistory(`vhub_actor_history_${sessionId}`, recordingProfile.voiceActorName || actorDraftName);
+    pushToHistory(`vhub_character_history_${sessionId}`, recordingProfile.characterName);
+    return take;
+  }, [recordingProfile, sessionId, user?.id, currentLine, queryClient, pushToHistory, actorDraftName]);
+
   const startCountdown = useCallback(() => {
     if (recordingStatus !== "idle" || !micState) return;
-    logAudioStep("countdown-started", { initiatorUserId: user?.id });
-    emitVideoEvent("countdown-start", { initiatorUserId: user?.id });
-    
-    let count = 3;
-    setCountdownValue(count);
-    setRecordingStatus("countdown");
+    const video = videoRef.current;
+    if (!video) return;
+    const prerollStart = Math.max(0, (video.currentTime || 0) - 3);
+    video.currentTime = prerollStart;
+    emitVideoEvent("seek", { currentTime: prerollStart });
+    logAudioStep("countdown-started", { initiatorUserId: user?.id, prerollStart });
+    setCountdownValue(3);
+    setRecordingStatus("recording");
+    startCapture(micState);
+    video.play().catch(() => {});
+    emitVideoEvent("play", { currentTime: video.currentTime });
+    emitVideoEvent("countdown-start", { initiatorUserId: user?.id, count: 3 });
     if (micState.audioContext) playCountdownBeep(micState.audioContext);
-
-    const timer = setInterval(() => {
+    if (countdownTimerRef.current) window.clearInterval(countdownTimerRef.current);
+    let count = 3;
+    countdownTimerRef.current = window.setInterval(() => {
       count -= 1;
-      emitVideoEvent("countdown-tick", { count, initiatorUserId: user?.id });
-      if (count <= 0) {
-        clearInterval(timer);
-        setRecordingStatus("recording");
-        setCountdownValue(0);
-        logAudioStep("capture-starting", { currentLine });
-        startCapture(micState);
-        if (videoRef.current) {
-          videoRef.current.play().catch(() => {});
-          emitVideoEvent("play", { currentTime: videoRef.current.currentTime });
-        }
-      } else {
-        setCountdownValue(count);
-        if (micState.audioContext) playCountdownBeep(micState.audioContext);
+      setCountdownValue(Math.max(0, count));
+      emitVideoEvent("countdown-tick", { count: Math.max(0, count), initiatorUserId: user?.id });
+      if (count > 0 && micState.audioContext) playCountdownBeep(micState.audioContext);
+      if (count <= 0 && countdownTimerRef.current) {
+        window.clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
       }
     }, 1000);
-  }, [recordingStatus, emitVideoEvent, user?.id, micState, logAudioStep, currentLine]);
+  }, [recordingStatus, micState, emitVideoEvent, logAudioStep, user?.id]);
 
   const handleStopRecording = useCallback(async () => {
     if (recordingStatus !== "recording" || !micState) return;
+    if (countdownTimerRef.current) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setCountdownValue(0);
     logAudioStep("stop-requested", { captureMode: micState.captureMode });
     const result = await stopCapture(micState);
     if (!result.samples.length) {
@@ -839,18 +958,25 @@ export default function RecordingRoom() {
       emitVideoEvent("pause", { currentTime: videoRef.current.currentTime });
     }
 
-    if (result) {
-      const metrics = analyzeTakeQuality(result.samples);
-      setQualityMetrics(metrics);
-      logAudioStep("quality-analyzed", {
-        score: metrics.score,
-        clipping: metrics.clipping,
-        loudness: metrics.loudness,
-        noiseFloor: metrics.noiseFloor,
-        sampleRate: result.sampleRate,
-      });
+    const metrics = analyzeTakeQuality(result.samples);
+    setQualityMetrics(metrics);
+    logAudioStep("quality-analyzed", {
+      score: metrics.score,
+      clipping: metrics.clipping,
+      loudness: metrics.loudness,
+      noiseFloor: metrics.noiseFloor,
+      sampleRate: result.sampleRate,
+    });
+    try {
+      setIsSaving(true);
+      await uploadTakeForDirector(result, metrics);
+      toast({ title: isDirector ? "Take recebido para aprovação" : "Take enviado para o diretor" });
+    } catch (err: any) {
+      toast({ title: "Erro ao enviar take", description: String(err?.message || err), variant: "destructive" });
+    } finally {
+      setIsSaving(false);
     }
-  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast]);
+  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -1000,10 +1126,6 @@ export default function RecordingRoom() {
         <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] bg-repeat opacity-[0.05]"></div>
       </div>
 
-      {countdownValue > 0 && (prerollInitiatorUserId === user?.id || isDirector) && (
-        <CountdownOverlay count={countdownValue} />
-      )}
-
       {isCustomizing && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[420px] overflow-hidden glass-panel shadow-2xl">
@@ -1093,7 +1215,7 @@ export default function RecordingRoom() {
         />
       )}
 
-      {takesPopupOpen && (
+      {takesPopupOpen && isDirector && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
           <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[520px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
@@ -1116,7 +1238,7 @@ export default function RecordingRoom() {
             <div className="px-6 py-5">
               <audio ref={takePreviewAudioRef} preload="none" />
               <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
-                {(isPrivileged ? takesList : takesList.filter((t: any) => t.voiceActorId === user?.id || t.userId === user?.id)).map((take: any) => (
+                {pendingApprovalTakes.map((take: any) => (
                   <div key={take.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-background/75 border border-border/70">
                     <button
                       onClick={() => {
@@ -1155,22 +1277,63 @@ export default function RecordingRoom() {
                         </div>
                       )}
                     </div>
-                    <button
-                      onClick={() => handleDownloadTake(take)}
-                      className="p-2 rounded-lg transition-colors text-muted-foreground bg-muted/60 hover:text-foreground hover:bg-muted"
-                      title="Baixar take"
-                      data-testid={`button-download-take-popup-${take.id}`}
-                    >
-                      <Download className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setApprovalModalTakeId(take.id)}
+                        className="px-3 h-8 rounded-lg text-xs font-semibold bg-primary/20 text-primary hover:bg-primary/30 transition-colors flex items-center gap-1"
+                        title="Aprovar e salvar take"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        Aprovar
+                      </button>
+                      <button
+                        onClick={() => handleDownloadTake(take)}
+                        className="p-2 rounded-lg transition-colors text-muted-foreground bg-muted/60 hover:text-foreground hover:bg-muted"
+                        title="Baixar take"
+                        data-testid={`button-download-take-popup-${take.id}`}
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
-                {takesList.length === 0 && (
+                {pendingApprovalTakes.length === 0 && (
                   <div className="text-sm text-center py-10 text-muted-foreground">
-                    Nenhum take gravado nesta sessao
+                    Nenhum take pendente de aprovação
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {approvalModalTakeId && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="w-[calc(100vw-32px)] max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl">
+            <h3 className="text-sm font-bold text-foreground">Confirmação de salvamento</h3>
+            <p className="text-xs text-muted-foreground mt-2">
+              {approvalFinalStep ? "Confirma definitivamente o salvamento deste take?" : "Aprovar este take para salvamento definitivo?"}
+            </p>
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                onClick={() => { setApprovalModalTakeId(null); setApprovalFinalStep(false); }}
+                className="h-9 px-3 rounded-lg bg-muted/70 text-muted-foreground hover:text-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={async () => {
+                  if (!approvalFinalStep) {
+                    setApprovalFinalStep(true);
+                    return;
+                  }
+                  await handleApproveTake(approvalModalTakeId);
+                }}
+                className="h-9 px-3 rounded-lg bg-primary text-primary-foreground"
+              >
+                {approvalFinalStep ? "Confirmar salvamento" : "Continuar"}
+              </button>
             </div>
           </div>
         </div>
@@ -1202,14 +1365,74 @@ export default function RecordingRoom() {
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
-                    className="absolute top-full left-0 mt-2 w-56 rounded-2xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2 z-[100]"
+                    className="absolute top-full left-0 mt-2 w-72 rounded-2xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2 z-[100]"
                   >
-                    <div className="text-[9px] uppercase tracking-widest text-muted-foreground px-3 py-2 border-b border-border/50 mb-1">Trocar Personagem</div>
+                    <div className="text-[9px] uppercase tracking-widest text-muted-foreground px-3 py-2 border-b border-border/50 mb-1">Dublador e Personagem</div>
+                    <div className="px-2 py-2 space-y-2 border-b border-border/50 mb-2">
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          value={actorDraftName}
+                          onChange={(e) => setActorDraftName(e.target.value)}
+                          placeholder="Nome do dublador"
+                          className="w-full h-8 pl-7 pr-2 rounded-lg bg-background/70 border border-border text-xs"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          value={characterSearch}
+                          onChange={(e) => setCharacterSearch(e.target.value)}
+                          placeholder="Buscar personagem"
+                          className="w-full h-8 pl-7 pr-2 rounded-lg bg-background/70 border border-border text-xs"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={newCharacterName}
+                          onChange={(e) => setNewCharacterName(e.target.value)}
+                          placeholder="Cadastrar personagem"
+                          className="flex-1 h-8 px-2 rounded-lg bg-background/70 border border-border text-xs"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleQuickCreateCharacter(); }}
+                          className="h-8 px-2 rounded-lg bg-primary/20 text-primary hover:bg-primary/30"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      {actorHistory.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {actorHistory.slice(0, 4).map((name) => (
+                            <button
+                              key={name}
+                              onClick={(e) => { e.stopPropagation(); setActorDraftName(name); }}
+                              className="px-2 h-6 rounded-full text-[10px] bg-muted/70 text-muted-foreground hover:text-foreground"
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <div className="max-h-64 overflow-y-auto custom-scrollbar">
-                      {charactersList?.map((char) => (
+                      {charactersList?.filter((char) => char.name.toLowerCase().includes(characterSearch.toLowerCase())).map((char) => (
                         <button
                           key={char.id}
-                          onClick={(e) => { e.stopPropagation(); handleCharacterChange(char); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCharacterChange(char);
+                            if (recordingProfile && actorDraftName.trim()) {
+                              const newProfile = { ...recordingProfile, voiceActorName: actorDraftName.trim() };
+                              setRecordingProfile(newProfile);
+                              localStorage.setItem(`vhub_rec_profile_${sessionId}`, JSON.stringify(newProfile));
+                              pushToHistory(`vhub_actor_history_${sessionId}`, actorDraftName.trim());
+                            }
+                            pushToHistory(`vhub_character_history_${sessionId}`, char.name);
+                          }}
                           className={cn(
                             "w-full flex items-center gap-3 p-2 rounded-xl transition-all hover:bg-primary/10 text-left",
                             recordingProfile.characterId === char.id ? "bg-primary/10 border border-primary/20" : "border border-transparent"
@@ -1224,11 +1447,24 @@ export default function RecordingRoom() {
                           </div>
                         </button>
                       ))}
+                      {characterHistory.length > 0 && (
+                        <div className="px-2 pt-2 text-[10px] text-muted-foreground">
+                          Histórico: {characterHistory.slice(0, 3).join(" • ")}
+                        </div>
+                      )}
                     </div>
                   </motion.div>
                 )}
               </AnimatePresence>
             </div>
+          )}
+          {!recordingProfile && (
+            <button
+              onClick={() => setShowProfilePanel(true)}
+              className="h-8 px-3 rounded-full bg-primary/15 text-primary text-[11px] font-semibold hover:bg-primary/25 transition-colors"
+            >
+              Cadastrar dublador/personagem
+            </button>
           )}
         </div>
 
@@ -1249,6 +1485,16 @@ export default function RecordingRoom() {
             </button>
           ) : (
             <>
+              {isDirector && (
+                <button
+                  onClick={() => setTakesPopupOpen(true)}
+                  className="h-9 px-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 flex items-center gap-1.5"
+                  aria-label="Takes pendentes do diretor"
+                >
+                  <Headphones className="w-4 h-4" />
+                  <span className="text-[11px] font-semibold">{pendingApprovalTakes.length}</span>
+                </button>
+              )}
               <div className="flex items-center gap-1.5 border-r border-border/60 pr-3 mr-1">
                 <Link href="/hub-dub/studios">
                   <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-white/5" data-testid="button-room-switch-studio">
@@ -1315,6 +1561,10 @@ export default function RecordingRoom() {
                   </div>
                   <p className="text-xs">Nenhum video anexado a esta producao</p>
                 </div>
+              )}
+
+              {countdownValue > 0 && (
+                <CountdownOverlay count={countdownValue} />
               )}
 
               <AnimatePresence>
@@ -1395,22 +1645,22 @@ export default function RecordingRoom() {
                   }}>
                     <div
                       className="absolute top-0 bottom-0 rounded-full bg-primary"
-                      style={{ width: `${(videoTime / videoDuration) * 100}%` }}
+                      style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }}
                     />
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {recordingStatus === "idle" || recordingStatus === "countdown" ? (
+                  {recordingStatus === "idle" || recordingStatus === "recorded" ? (
                     <button
                       onClick={startCountdown}
-                      disabled={!micReady || recordingStatus === "countdown"}
+                      disabled={!micReady || isSaving}
                       className={cn(
                         "w-11 h-11 rounded-full flex items-center justify-center transition-all",
-                        recordingStatus === "countdown" ? "bg-amber-500/20 border border-amber-500/40 animate-pulse" : "bg-white/10 border border-white/20 text-white"
+                        isSaving ? "opacity-50 cursor-not-allowed bg-white/10 border border-white/20 text-white" : "bg-white/10 border border-white/20 text-white"
                       )}
                     >
-                      <Mic className="w-5 h-5" />
+                      {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Mic className="w-5 h-5" />}
                     </button>
                   ) : (
                     <button
@@ -1422,6 +1672,25 @@ export default function RecordingRoom() {
                   )}
                 </div>
               </div>
+              {recordingStatus === "recorded" && (
+                <div className="absolute bottom-20 left-3 right-3 h-9 rounded-lg bg-black/70 border border-white/10 flex items-center justify-between px-3 text-[11px] text-white/80">
+                  {isDirector ? (
+                    <>
+                      <span>Take pronto para aprovação do diretor.</span>
+                      <button
+                        onClick={() => lastUploadedTakeId && setApprovalModalTakeId(lastUploadedTakeId)}
+                        disabled={!lastUploadedTakeId}
+                        className="h-7 px-2 rounded-md bg-primary/25 text-primary disabled:opacity-40 flex items-center gap-1"
+                      >
+                        <Headphones className="w-3.5 h-3.5" />
+                        Aprovar
+                      </button>
+                    </>
+                  ) : (
+                    <span>Take enviado. Aguardando aprovação do diretor.</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
