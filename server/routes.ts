@@ -20,7 +20,7 @@ import { httpSessions } from "@shared/models/auth";
 import { requireAuth, requireAdmin, requireStudioAccess, requireStudioRole } from "./middleware/auth";
 import { logger } from "./lib/logger";
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -28,6 +28,7 @@ import { Readable } from "stream";
 import {
   checkSupabaseConnection,
   configureSupabase,
+  createSignedSupabaseUrlFromPublicUrl,
   deleteFromSupabaseStorage,
   downloadFromSupabaseStorageUrl,
   isSupabaseConfigured,
@@ -37,7 +38,7 @@ import {
 import { decideStudioAutoEntry } from "./lib/studio-auto-entry";
 import { annotateTakeVersions } from "./lib/take-versioning";
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -182,6 +183,142 @@ function secondsToTimecodeToken(seconds: number) {
   const ss = String(Math.floor((totalMs % 60000) / 1000)).padStart(2, "0");
   const ms = String(totalMs % 1000).padStart(3, "0");
   return `${hh}${mm}${ss}${ms}`;
+}
+
+const ALLOWED_AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a"]);
+const ALLOWED_AUDIO_MIME_PREFIXES = ["audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/m4a"];
+const MAX_TAKE_FILE_SIZE_BYTES = 100 * 1024 * 1024;
+const MIN_SAMPLE_RATE_HZ = 44100;
+const SUPABASE_DOWNLOAD_URL_TTL_SECONDS = 24 * 60 * 60;
+
+type PendingTakeUploadJob = {
+  takeId: string;
+  objectPath: string;
+  bucket: string;
+  contentType: string;
+  buffer: Buffer;
+  md5: string;
+  userId: string | null;
+  sessionId: string;
+  attempts: number;
+  createdAt: number;
+};
+
+const pendingTakeUploadQueue: PendingTakeUploadJob[] = [];
+const deadLetterUploadQueue: PendingTakeUploadJob[] = [];
+let takeUploadQueueRunning = false;
+
+function appendDeadLetterJob(job: PendingTakeUploadJob, reason: string) {
+  deadLetterUploadQueue.push(job);
+  const payload = {
+    ...job,
+    reason,
+    failedAt: new Date().toISOString(),
+  };
+  try {
+    fs.appendFileSync(path.join(mediaJobsDir, "audio-upload-dead-letter.jsonl"), `${JSON.stringify(payload)}\n`);
+  } catch {}
+}
+
+function detectAudioFormat(fileName: string, mimeType: string) {
+  const ext = path.extname(String(fileName || "").trim().toLowerCase());
+  const mime = String(mimeType || "").trim().toLowerCase();
+  const extAllowed = ALLOWED_AUDIO_EXTENSIONS.has(ext);
+  const mimeAllowed = ALLOWED_AUDIO_MIME_PREFIXES.some((item) => mime.startsWith(item));
+  return { ext, mime, extAllowed, mimeAllowed, format: ext.replace(".", "").toUpperCase() || "WAV" };
+}
+
+function estimateWavSampleRate(input: Buffer): number | null {
+  if (!input || input.length < 32) return null;
+  const riff = input.toString("ascii", 0, 4);
+  const wave = input.toString("ascii", 8, 12);
+  if (riff !== "RIFF" || wave !== "WAVE") return null;
+  try {
+    return input.readUInt32LE(24);
+  } catch {
+    return null;
+  }
+}
+
+function checksumMd5(input: Buffer) {
+  return createHash("md5").update(input).digest("hex");
+}
+
+async function createAudioAuditLog(req: Request, action: string, extra: Record<string, unknown>) {
+  const user = (req as any).user;
+  await storage.createAuditLog({
+    userId: user?.id || null,
+    action,
+    details: JSON.stringify({
+      ...extra,
+      ip: req.ip || null,
+      userAgent: req.headers["user-agent"] || null,
+      at: new Date().toISOString(),
+    }),
+  });
+}
+
+async function uploadTakeJobToSupabase(job: PendingTakeUploadJob) {
+  const publicUrl = await uploadToSupabaseStorage({
+    bucket: job.bucket,
+    path: job.objectPath,
+    buffer: job.buffer,
+    contentType: job.contentType,
+  });
+  const verifyRes = await downloadFromSupabaseStorageUrl(publicUrl, { range: "bytes=0-1" });
+  if (!verifyRes.ok) {
+    throw new Error(`Verificação de upload falhou: HTTP ${verifyRes.status}`);
+  }
+  return publicUrl;
+}
+
+function enqueueTakeUploadRetry(job: PendingTakeUploadJob) {
+  pendingTakeUploadQueue.push(job);
+  if (!takeUploadQueueRunning) {
+    void processPendingTakeUploadQueue();
+  }
+}
+
+async function processPendingTakeUploadQueue() {
+  if (takeUploadQueueRunning) return;
+  takeUploadQueueRunning = true;
+  while (pendingTakeUploadQueue.length > 0) {
+    const current = pendingTakeUploadQueue.shift()!;
+    try {
+      const url = await uploadTakeJobToSupabase(current);
+      await storage.updateTakeAudioUrl(current.takeId, url);
+      await storage.createAuditLog({
+        userId: current.userId,
+        action: "take.upload.retry.success",
+        details: JSON.stringify({
+          takeId: current.takeId,
+          sessionId: current.sessionId,
+          objectPath: current.objectPath,
+          attempts: current.attempts,
+          md5: current.md5,
+        }),
+      });
+    } catch (error: any) {
+      current.attempts += 1;
+      if (current.attempts >= 5) {
+        appendDeadLetterJob(current, String(error?.message || error));
+        await storage.createAuditLog({
+          userId: current.userId,
+          action: "take.upload.retry.dead_letter",
+          details: JSON.stringify({
+            takeId: current.takeId,
+            sessionId: current.sessionId,
+            attempts: current.attempts,
+            error: String(error?.message || error),
+          }),
+        });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(6000, 800 * current.attempts)));
+      pendingTakeUploadQueue.push(current);
+    }
+  }
+  takeUploadQueueRunning = false;
 }
 
 function jobStatusPath(jobId: string): string {
@@ -973,21 +1110,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       let audioUrl = body.audioUrl || "";
       let contentType = "audio/wav";
+      let localFilePath = "";
+      let audioMd5 = "";
+      let audioSizeBytes = 0;
+      let sampleRateHz: number | null = null;
+      let audioFormat = "WAV";
+      const actorUserId = String((req as any).user?.id || "");
 
       if (req.file) {
+        if (req.file.size > MAX_TAKE_FILE_SIZE_BYTES) {
+          return res.status(400).json({ message: "Arquivo excede o limite de 100MB" });
+        }
         const originalName = req.file.originalname || "";
         const safeName = originalName.replace(/[^a-zA-Z0-9_.\-]/g, "");
+        const formatCheck = detectAudioFormat(safeName || originalName, req.file.mimetype || "");
+        if (!formatCheck.extAllowed && !formatCheck.mimeAllowed) {
+          return res.status(400).json({ message: "Formato inválido. Use MP3, WAV ou M4A." });
+        }
         const ext = path.extname(safeName || "") || ".wav";
         const filename = `take_${sessionId}_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
         const filePath = path.join(uploadsDir, filename);
         fs.writeFileSync(filePath, req.file.buffer);
+        localFilePath = filePath;
         audioUrl = `/uploads/${filename}`;
         contentType = req.file.mimetype || contentType;
+        audioMd5 = checksumMd5(req.file.buffer);
+        audioSizeBytes = req.file.size || req.file.buffer.length || 0;
+        sampleRateHz = estimateWavSampleRate(req.file.buffer);
+        if (sampleRateHz !== null && sampleRateHz < MIN_SAMPLE_RATE_HZ) {
+          return res.status(400).json({ message: "Taxa de amostragem mínima é 44.1kHz" });
+        }
+        audioFormat = formatCheck.format;
         logger.info("[Take Upload] File buffered locally", {
           sessionId,
           filename,
           contentType,
           fileSize: req.file.size,
+          md5: audioMd5,
+          format: audioFormat,
+          sampleRateHz,
         });
       }
 
@@ -1020,6 +1181,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           details: JSON.stringify({ takeId: take.id, sessionId: take.sessionId, lineIndex: take.lineIndex }),
         });
       }
+
+      await createAudioAuditLog(req, "take.upload.created", {
+        takeId: take.id,
+        sessionId,
+        lineIndex: take.lineIndex,
+        storageProvider,
+        audioFormat,
+        sampleRateHz,
+        durationSeconds: take.durationSeconds,
+        bytes: audioSizeBytes || req.file?.size || 0,
+        md5: audioMd5 || null,
+      });
 
       if (req.file && storageProvider === "supabase" && isSupabaseConfigured()) {
         try {
@@ -1068,14 +1241,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               ? [studioName, productionName, actorFolder, characterFolder, filename]
               : [baseFolder, studioName, productionName, actorFolder, characterFolder, filename];
           const objectPath = pathSegments.filter(Boolean).join("/");
-          const publicUrl = await uploadToSupabaseStorage({
+          const uploadJob: PendingTakeUploadJob = {
+            takeId: take.id,
             bucket: supabaseBucket,
-            path: objectPath,
-            buffer: req.file.buffer,
+            objectPath,
             contentType,
-          });
+            buffer: req.file.buffer,
+            md5: audioMd5 || checksumMd5(req.file.buffer),
+            userId: actorUserId || null,
+            sessionId,
+            attempts: 1,
+            createdAt: Date.now(),
+          };
+          const publicUrl = await uploadTakeJobToSupabase(uploadJob);
           await storage.updateTakeAudioUrl(take.id, publicUrl);
           (take as any).audioUrl = publicUrl;
+          await createAudioAuditLog(req, "take.upload.supabase.synced", {
+            takeId: take.id,
+            sessionId,
+            objectPath,
+            bucket: supabaseBucket,
+            md5: uploadJob.md5,
+            bytes: audioSizeBytes || req.file.size,
+          });
           logger.info("[Take Upload] Supabase sync complete", {
             takeId: take.id,
             objectPath,
@@ -1083,10 +1271,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           });
         } catch (e: any) {
           logger.error("[Take Upload] Supabase upload failed", { takeId: take.id, message: e?.message });
+          if (req.file) {
+            enqueueTakeUploadRetry({
+              takeId: take.id,
+              bucket: supabaseBucket,
+              objectPath: `${normalizeSegment(String(takesPath || "uploads"))}/${path.basename(localFilePath || audioUrl)}`,
+              contentType,
+              buffer: req.file.buffer,
+              md5: audioMd5 || checksumMd5(req.file.buffer),
+              userId: actorUserId || null,
+              sessionId,
+              attempts: 1,
+              createdAt: Date.now(),
+            });
+            await createAudioAuditLog(req, "take.upload.retry.queued", {
+              takeId: take.id,
+              sessionId,
+              reason: String(e?.message || e),
+            });
+          }
         }
       }
 
-      logger.info("[Take Upload] Completed", { takeId: take.id, sessionId });
+      logger.info("[Take Upload] Completed", { takeId: take.id, sessionId, md5: audioMd5 || null });
       res.status(201).json(take);
     } catch (err: any) {
       logger.error("[Take Upload] Create error", { message: err?.message });
@@ -1117,29 +1324,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
       const canManage = await canManageSessionTakes(user, req.params.sessionId, session.studioId);
       const takesList = annotateTakeVersions(await storage.getSessionTakesWithDetails(req.params.sessionId));
+      const scoped = canManage
+        ? takesList
+        : takesList.filter(
+        (take: any) => String(take.voiceActorId || "") === String(user.id || "") || String(take.userId || "") === String(user.id || "")
+      );
       if (canManage) {
         await storage.createAuditLog({
           userId: user.id,
           action: "recordings.access.privileged",
-          details: JSON.stringify({ sessionId: req.params.sessionId, count: takesList.length }),
+          details: JSON.stringify({ sessionId: req.params.sessionId, count: scoped.length }),
         });
-        logger.info("[Recordings] Privileged list returned", {
-          sessionId: req.params.sessionId,
-          userId: user.id,
-          count: takesList.length,
-        });
-        res.status(200).json(takesList);
-        return;
       }
-      const scoped = takesList.filter(
-        (take: any) => String(take.voiceActorId || "") === String(user.id || "") || String(take.userId || "") === String(user.id || "")
-      );
+      const query = z.object({
+        page: z.coerce.number().int().min(1).optional(),
+        pageSize: z.coerce.number().int().min(1).max(20).optional(),
+        search: z.string().max(120).optional(),
+        userId: z.string().max(120).optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        sortBy: z.enum(["createdAt", "durationSeconds", "lineIndex", "characterName"]).optional(),
+        sortDir: z.enum(["asc", "desc"]).optional(),
+      }).parse(req.query || {});
+      const fromTs = query.from ? new Date(query.from).getTime() : null;
+      const toTs = query.to ? new Date(query.to).getTime() : null;
+      const searchTerm = String(query.search || "").trim().toLowerCase();
+      let filtered = scoped.filter((item: any) => {
+        const createdAt = new Date(String(item.createdAt || 0)).getTime();
+        if (Number.isFinite(fromTs) && fromTs !== null && createdAt < fromTs) return false;
+        if (Number.isFinite(toTs) && toTs !== null && createdAt > toTs) return false;
+        if (query.userId && String(item.voiceActorId || "") !== String(query.userId)) return false;
+        if (searchTerm) {
+          const hay = `${item.characterName || ""} ${item.voiceActorName || ""} ${item.id || ""}`.toLowerCase();
+          if (!hay.includes(searchTerm)) return false;
+        }
+        if (String(item.audioUrl || "").startsWith("discarded://")) return false;
+        return true;
+      });
+      const sortBy = query.sortBy || "createdAt";
+      const sortDir = query.sortDir || "desc";
+      filtered = [...filtered].sort((a: any, b: any) => {
+        const factor = sortDir === "asc" ? 1 : -1;
+        if (sortBy === "durationSeconds") return factor * ((Number(a.durationSeconds || 0) - Number(b.durationSeconds || 0)));
+        if (sortBy === "lineIndex") return factor * (Number(a.lineIndex || 0) - Number(b.lineIndex || 0));
+        if (sortBy === "characterName") return factor * String(a.characterName || "").localeCompare(String(b.characterName || ""));
+        return factor * (new Date(String(a.createdAt || 0)).getTime() - new Date(String(b.createdAt || 0)).getTime());
+      });
+      const pageSize = query.pageSize || 20;
+      const page = query.page || 1;
+      const total = filtered.length;
+      const pageCount = Math.max(1, Math.ceil(total / pageSize));
+      const offset = (Math.min(page, pageCount) - 1) * pageSize;
+      const items = filtered.slice(offset, offset + pageSize).map((item: any) => ({
+        ...item,
+        fileName: filenameFromAudioUrl(item.audioUrl, `take_${item.id}.wav`),
+        format: path.extname(filenameFromAudioUrl(item.audioUrl, "")).replace(".", "").toUpperCase() || "WAV",
+      }));
       logger.info("[Recordings] Scoped list returned", {
         sessionId: req.params.sessionId,
         userId: user.id,
-        count: scoped.length,
+        count: items.length,
       });
-      res.status(200).json(scoped);
+      res.status(200).json({
+        items,
+        page: Math.min(page, pageCount),
+        pageSize,
+        total,
+        pageCount,
+      });
     } catch (error: any) {
       logger.error("[Recordings] Database fetch failure", {
         sessionId: req.params.sessionId,
@@ -1183,9 +1435,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const user = (req as any).user!;
       const session = await storage.getSession(takeRecord.sessionId);
       const canManage = session ? await canManageSessionTakes(user, takeRecord.sessionId, session.studioId) : false;
-      const isOwner = String(takeRecord.voiceActorId) === String(user.id);
-      if (!canManage && !isOwner) return res.status(403).json({ message: "Acesso negado" });
+      if (canManage && user.role !== "platform_owner") {
+        return res.status(403).json({ message: "Diretor nao pode excluir definitivamente. Use descarte." });
+      }
+      if (user.role !== "platform_owner") return res.status(403).json({ message: "Acesso negado" });
       await storage.deleteTake(req.params.id);
+      await createAudioAuditLog(req, "take.deleted.permanent", {
+        takeId: takeRecord.id,
+        sessionId: takeRecord.sessionId,
+      });
       res.status(200).json({ message: "Take excluido" });
     } catch (err) {
       res.status(500).json({ message: "Erro ao excluir take" });
@@ -1220,16 +1478,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const take = takeList[0];
       const user = (req as any).user!;
       const canManage = await canManageSessionTakes(user, take.sessionId, take.studioId);
-      if (!canManage) {
-        return res.status(403).json({ message: "Acesso restrito ao diretor" });
-      }
-      if (!canManage) return res.status(403).json({ message: "Acesso negado" });
+      const isOwner = String(take.voiceActorId || "") === String(user.id || "");
+      if (!canManage && !isOwner) return res.status(403).json({ message: "Acesso negado" });
       const filename = filenameFromAudioUrl(take.audioUrl, "take.wav").replace(/[^a-zA-Z0-9_.\-]/g, "_");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      await createAudioAuditLog(req, "take.download.direct", {
+        takeId: take.id,
+        sessionId: take.sessionId,
+        audioUrl: take.audioUrl,
+      });
 
       const filePath = safeAudioPath(take.audioUrl);
       if (filePath && fs.existsSync(filePath)) {
-        res.setHeader("Content-Type", "audio/wav");
+        const ext = path.extname(filename).toLowerCase();
+        const contentType = ext === ".mp3" ? "audio/mpeg" : ext === ".m4a" ? "audio/mp4" : "audio/wav";
+        res.setHeader("Content-Type", contentType);
         fs.createReadStream(filePath).pipe(res);
         return;
       }
@@ -1250,6 +1513,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.get("/api/takes/:id/download-link", requireAuth, async (req, res) => {
+    try {
+      const takeList = await storage.getTakesByIds([req.params.id]);
+      if (takeList.length === 0) return res.status(404).json({ message: "Take nao encontrado" });
+      const take = takeList[0];
+      const user = (req as any).user!;
+      const canManage = await canManageSessionTakes(user, take.sessionId, take.studioId);
+      const isOwner = String(take.voiceActorId || "") === String(user.id || "");
+      if (!canManage && !isOwner) return res.status(403).json({ message: "Acesso negado" });
+      let url = "";
+      if (isSupabaseConfigured() && parseSupabaseStorageUrl(take.audioUrl)) {
+        url = await createSignedSupabaseUrlFromPublicUrl(take.audioUrl, SUPABASE_DOWNLOAD_URL_TTL_SECONDS);
+      } else {
+        url = `/api/takes/${take.id}/download`;
+      }
+      await createAudioAuditLog(req, "take.download.link.generated", {
+        takeId: take.id,
+        sessionId: take.sessionId,
+        expiresInSeconds: SUPABASE_DOWNLOAD_URL_TTL_SECONDS,
+      });
+      res.status(200).json({
+        url,
+        expiresAt: new Date(Date.now() + SUPABASE_DOWNLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Falha ao gerar link temporario" });
+    }
+  });
+
   app.get("/api/takes/:id/stream", requireAuth, async (req, res) => {
     try {
       const takeList = await storage.getTakesByIds([req.params.id]);
@@ -1257,14 +1549,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const take = takeList[0];
       const user = (req as any).user!;
       const canManage = await canManageSessionTakes(user, take.sessionId, take.studioId);
-      if (!canManage) {
-        return res.status(403).json({ message: "Acesso restrito ao diretor" });
+      const isOwner = String(take.voiceActorId || "") === String(user.id || "");
+      if (!canManage && !isOwner && !take.isPreferred) return res.status(403).json({ message: "Acesso negado" });
+      if (String(take.audioUrl || "").startsWith("discarded://")) {
+        return res.status(404).json({ message: "Take descartado" });
       }
-      if (!canManage) return res.status(403).json({ message: "Acesso negado" });
 
       const filePath = safeAudioPath(take.audioUrl);
       if (filePath && fs.existsSync(filePath)) {
-        sendFileWithRange(req, res, filePath, "audio/wav");
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType = ext === ".mp3" ? "audio/mpeg" : ext === ".m4a" ? "audio/mp4" : "audio/wav";
+        sendFileWithRange(req, res, filePath, contentType);
         return;
       }
 
@@ -1289,6 +1584,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(404).json({ message: "Arquivo nao encontrado" });
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Erro ao reproduzir take" });
+    }
+  });
+
+  app.post("/api/takes/:id/discard", requireAuth, async (req, res) => {
+    try {
+      const payload = z.object({ confirm: z.literal(true) }).parse(req.body || {});
+      if (!payload.confirm) return res.status(400).json({ message: "Confirmacao obrigatoria" });
+      const [takeRecord] = await db.select().from(takes).where(eq(takes.id, req.params.id));
+      if (!takeRecord) return res.status(404).json({ message: "Take nao encontrado" });
+      const user = (req as any).user!;
+      const session = await storage.getSession(takeRecord.sessionId);
+      const canManage = session ? await canManageSessionTakes(user, takeRecord.sessionId, session.studioId) : false;
+      if (!canManage) return res.status(403).json({ message: "Acesso negado" });
+      const discardedUrl = String(takeRecord.audioUrl || "").startsWith("discarded://")
+        ? String(takeRecord.audioUrl || "")
+        : `discarded://${takeRecord.audioUrl}`;
+      await db.update(takes)
+        .set({ audioUrl: discardedUrl, isPreferred: false, aiRecommended: false })
+        .where(eq(takes.id, req.params.id));
+      await createAudioAuditLog(req, "take.discarded", {
+        takeId: takeRecord.id,
+        sessionId: takeRecord.sessionId,
+        lineIndex: takeRecord.lineIndex,
+      });
+      res.status(200).json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Falha ao descartar take" });
     }
   });
 

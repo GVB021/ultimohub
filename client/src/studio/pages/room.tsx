@@ -377,16 +377,47 @@ function useTakesList(sessionId: string) {
   });
 }
 
-function useRecordingsList(sessionId: string) {
+type RecordingsQueryParams = {
+  page: number;
+  pageSize: number;
+  search: string;
+  userId?: string;
+  from?: string;
+  to?: string;
+  sortBy: "createdAt" | "durationSeconds" | "lineIndex" | "characterName";
+  sortDir: "asc" | "desc";
+};
+
+type RecordingsResponse = {
+  items: any[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pageCount: number;
+};
+
+function useRecordingsList(sessionId: string, params: RecordingsQueryParams) {
   const cacheKey = `vhub_recordings_cache_${sessionId}`;
   const query = useQuery({
-    queryKey: ["/api/sessions", sessionId, "recordings"],
+    queryKey: ["/api/sessions", sessionId, "recordings", params],
     queryFn: async () => {
       console.debug("[Room][Recordings] iniciando leitura de takes", { sessionId });
       try {
-        const data = await authFetch(`/api/sessions/${sessionId}/recordings`);
-        console.debug("[Room][Recordings] takes carregados", { sessionId, total: Array.isArray(data) ? data.length : 0 });
-        return data;
+        const queryString = new URLSearchParams();
+        queryString.set("page", String(params.page || 1));
+        queryString.set("pageSize", String(params.pageSize || 20));
+        queryString.set("sortBy", params.sortBy);
+        queryString.set("sortDir", params.sortDir);
+        if (params.search) queryString.set("search", params.search);
+        if (params.userId) queryString.set("userId", params.userId);
+        if (params.from) queryString.set("from", params.from);
+        if (params.to) queryString.set("to", params.to);
+        const data = await authFetch(`/api/sessions/${sessionId}/recordings?${queryString.toString()}`);
+        const normalized: RecordingsResponse = Array.isArray(data)
+          ? { items: data, page: 1, pageSize: data.length || 20, total: data.length || 0, pageCount: 1 }
+          : { items: Array.isArray(data?.items) ? data.items : [], page: Number(data?.page || 1), pageSize: Number(data?.pageSize || 20), total: Number(data?.total || 0), pageCount: Number(data?.pageCount || 1) };
+        console.debug("[Room][Recordings] takes carregados", { sessionId, total: normalized.total });
+        return normalized;
       } catch (error) {
         console.error("[Room][Recordings] falha ao carregar takes", { sessionId, error });
         throw error;
@@ -397,19 +428,20 @@ function useRecordingsList(sessionId: string) {
     initialData: () => {
       try {
         const raw = localStorage.getItem(cacheKey);
-        return raw ? JSON.parse(raw) : [];
+        const items = raw ? JSON.parse(raw) : [];
+        return { items, page: 1, pageSize: 20, total: Array.isArray(items) ? items.length : 0, pageCount: 1 };
       } catch {
-        return [];
+        return { items: [], page: 1, pageSize: 20, total: 0, pageCount: 1 };
       }
     },
     staleTime: 1000,
   });
   useEffect(() => {
-    if (!Array.isArray(query.data)) return;
+    if (!Array.isArray(query.data?.items)) return;
     try {
-      localStorage.setItem(cacheKey, JSON.stringify(query.data.slice(0, 120)));
+      localStorage.setItem(cacheKey, JSON.stringify(query.data.items.slice(0, 120)));
     } catch {}
-  }, [cacheKey, query.data]);
+  }, [cacheKey, query.data?.items]);
   return query;
 }
 
@@ -481,6 +513,13 @@ export default function RecordingRoom() {
       return defaults;
     }
   });
+  const hasPersistedDeviceSettings = useMemo(() => {
+    try {
+      return Boolean(localStorage.getItem("vhub_device_settings"));
+    } catch {
+      return false;
+    }
+  }, []);
 
   const [recordingProfile, setRecordingProfile] = useState<RecordingProfile | null>(() => {
     if (!sessionId) return null;
@@ -508,6 +547,14 @@ export default function RecordingRoom() {
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [recordingsScope, setRecordingsScope] = useState<"mine" | "all">("mine");
+  const [recordingsPage, setRecordingsPage] = useState(1);
+  const [recordingsSearch, setRecordingsSearch] = useState("");
+  const [recordingsSortBy, setRecordingsSortBy] = useState<"createdAt" | "durationSeconds" | "lineIndex" | "characterName">("createdAt");
+  const [recordingsSortDir, setRecordingsSortDir] = useState<"asc" | "desc">("desc");
+  const [recordingsDateFrom, setRecordingsDateFrom] = useState("");
+  const [recordingsDateTo, setRecordingsDateTo] = useState("");
+  const [discardModalTake, setDiscardModalTake] = useState<any | null>(null);
+  const [discardFinalStep, setDiscardFinalStep] = useState(false);
   const [onlySelectedCharacter, setOnlySelectedCharacter] = useState(false);
   const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
@@ -694,10 +741,20 @@ export default function RecordingRoom() {
 
   const { data: takesList = [] } = useTakesList(sessionId);
   const {
-    data: recordingsList = [],
+    data: recordingsResponse,
     error: recordingsError,
     isError: hasRecordingsError,
-  } = useRecordingsList(sessionId);
+  } = useRecordingsList(sessionId, {
+    page: recordingsPage,
+    pageSize: 20,
+    search: recordingsSearch,
+    userId: recordingsScope === "all" ? undefined : String(user?.id || ""),
+    from: recordingsDateFrom || undefined,
+    to: recordingsDateTo || undefined,
+    sortBy: recordingsSortBy,
+    sortDir: recordingsSortDir,
+  });
+  const recordingsList = recordingsResponse?.items || [];
   const approvalTargetTake = useMemo(
     () => takesList.find((take: any) => String(take.id || "") === String(approvalModalTakeId || "")) || null,
     [takesList, approvalModalTakeId]
@@ -735,7 +792,6 @@ export default function RecordingRoom() {
     const takesQueryKey = ["/api/sessions", sessionId, "takes"] as const;
     const recordingsQueryKey = ["/api/sessions", sessionId, "recordings"] as const;
     const previousTakes = queryClient.getQueryData(takesQueryKey);
-    const previousRecordings = queryClient.getQueryData(recordingsQueryKey);
     setOptimisticRemovingTakeIds((prev) => {
       const next = new Set(prev);
       next.add(takeId);
@@ -744,19 +800,17 @@ export default function RecordingRoom() {
     queryClient.setQueryData(takesQueryKey, (current: any) =>
       Array.isArray(current) ? current.filter((item: any) => String(item?.id || "") !== takeId) : current
     );
-    queryClient.setQueryData(recordingsQueryKey, (current: any) =>
-      Array.isArray(current) ? current.filter((item: any) => String(item?.id || "") !== takeId) : current
-    );
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 260));
-      await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
+      await authFetch(`/api/takes/${takeId}/discard`, { method: "POST", body: JSON.stringify({ confirm: true }) });
       await queryClient.invalidateQueries({ queryKey: takesQueryKey });
-      await queryClient.invalidateQueries({ queryKey: recordingsQueryKey });
+      await queryClient.invalidateQueries({ queryKey: recordingsQueryKey, exact: false });
       await logFeatureAudit("room.take.discarded", { takeId });
       toast({ title: "Take descartado" });
+      setDiscardModalTake(null);
+      setDiscardFinalStep(false);
     } catch (error: any) {
       queryClient.setQueryData(takesQueryKey, previousTakes);
-      queryClient.setQueryData(recordingsQueryKey, previousRecordings);
       toast({ title: "Falha ao descartar take", description: error?.message || "Tente novamente", variant: "destructive" });
     } finally {
       setOptimisticRemovingTakeIds((prev) => {
@@ -795,7 +849,9 @@ export default function RecordingRoom() {
   const [isSaving, setIsSaving] = useState(false);
   const previewAudioRef = useRef<HTMLAudioElement>(null);
   const recordingsPreviewAudioRef = useRef<HTMLAudioElement>(null);
+  const recordingRowAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const [recordingsPreviewId, setRecordingsPreviewId] = useState<string | null>(null);
+  const [recordingsPlaybackRate, setRecordingsPlaybackRate] = useState(1);
 
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
   const [recordingAvailability, setRecordingAvailability] = useState<Record<string, "available" | "error">>({});
@@ -820,11 +876,8 @@ export default function RecordingRoom() {
   const isPrivileged = canManageAudio || canTextControl;
   const scopedRecordings = useMemo(() => {
     const source = Array.isArray(recordingsList) ? recordingsList : [];
-    const filtered = (isPrivileged && recordingsScope === "all")
-      ? source
-      : source.filter((take: any) => String(take.voiceActorId || "") === String(user?.id || "") || String(take.userId || "") === String(user?.id || ""));
-    return [...filtered].sort((a: any, b: any) => new Date(String(b.createdAt || 0)).getTime() - new Date(String(a.createdAt || 0)).getTime());
-  }, [recordingsList, isPrivileged, recordingsScope, user?.id]);
+    return [...source].sort((a: any, b: any) => new Date(String(b.createdAt || 0)).getTime() - new Date(String(a.createdAt || 0)).getTime());
+  }, [recordingsList]);
   useEffect(() => {
     setRecordingAvailability((prev) => {
       const next: Record<string, "available" | "error"> = {};
@@ -836,6 +889,16 @@ export default function RecordingRoom() {
       return next;
     });
   }, [scopedRecordings]);
+  useEffect(() => {
+    setRecordingsPage(1);
+  }, [recordingsScope, recordingsSearch, recordingsDateFrom, recordingsDateTo, recordingsSortBy, recordingsSortDir]);
+  useEffect(() => {
+    const currentId = String(recordingsPlayerOpenId || "");
+    if (!currentId) return;
+    const audio = recordingRowAudioRefs.current[currentId];
+    if (!audio) return;
+    audio.playbackRate = recordingsPlaybackRate;
+  }, [recordingsPlayerOpenId, recordingsPlaybackRate]);
   const isApproverRole = useCallback((role: string | undefined | null) => {
     if (!role) return false;
     return hasUiPermission(resolveUiRole(role, false), "approve_take");
@@ -1104,6 +1167,53 @@ export default function RecordingRoom() {
   }, [scriptLines, currentLine, isLooping, customLoop, emitVideoEvent, loopPreparing]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem("vhub_device_settings", JSON.stringify(deviceSettings));
+    } catch {}
+  }, [deviceSettings]);
+
+  useEffect(() => {
+    if (hasPersistedDeviceSettings) return;
+    const ua = navigator.userAgent.toLowerCase();
+    const mobileDetected = /iphone|ipad|ipod|android/.test(ua);
+    if (!mobileDetected) return;
+    if (deviceSettings.voiceCaptureMode !== "original") return;
+    setDeviceSettings((prev) => ({ ...prev, voiceCaptureMode: "high-fidelity" }));
+    toast({
+      title: "Modo lossless ativado",
+      description: "Captura em alta fidelidade habilitada por padrão no dispositivo móvel.",
+    });
+  }, [deviceSettings.voiceCaptureMode, hasPersistedDeviceSettings, toast]);
+
+  useEffect(() => {
+    const targetSinkId = String(deviceSettings.outputDeviceId || "").trim() || "default";
+    const applySink = async () => {
+      const mediaTargets = [
+        previewAudioRef.current as HTMLMediaElement | null,
+        recordingsPreviewAudioRef.current as HTMLMediaElement | null,
+        videoRef.current as HTMLMediaElement | null,
+      ];
+      for (const media of mediaTargets) {
+        if (!media) continue;
+        const sinkCapable = media as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> };
+        if (typeof sinkCapable.setSinkId !== "function") continue;
+        try {
+          await sinkCapable.setSinkId(targetSinkId);
+        } catch (error) {
+          logAudioStep("sink-apply-error", { message: String((error as any)?.message || error), outputDeviceId: targetSinkId });
+          toast({
+            title: "Saída de áudio não aplicada",
+            description: "Seu navegador não permitiu selecionar este dispositivo de saída.",
+            variant: "destructive",
+          });
+          break;
+        }
+      }
+    };
+    void applySink();
+  }, [deviceSettings.outputDeviceId, logAudioStep, toast]);
+
+  useEffect(() => {
     if (deviceSettingsOpen) return;
     logAudioStep("microphone-request", {
       captureMode: deviceSettings.voiceCaptureMode,
@@ -1130,9 +1240,32 @@ export default function RecordingRoom() {
         });
       })
       .catch((err) => {
+        const message = String(err?.message || err);
+        if (deviceSettings.voiceCaptureMode === "high-fidelity") {
+          requestMicrophone("original", deviceSettings.inputDeviceId)
+            .then((fallbackState) => {
+              setMicState(fallbackState);
+              setMicReady(true);
+              setGain(fallbackState, deviceSettings.inputGain);
+              setDeviceSettings((prev) => ({ ...prev, voiceCaptureMode: "original" }));
+              logAudioStep("microphone-fallback-original", { message });
+              toast({
+                title: "Lossless indisponível neste dispositivo",
+                description: "Aplicado fallback automático para modo padrão.",
+                variant: "destructive",
+              });
+            })
+            .catch((fallbackError) => {
+              console.error("Mic fallback error:", fallbackError);
+              setMicReady(false);
+              logAudioStep("microphone-error", { message: String((fallbackError as any)?.message || fallbackError) });
+              toast({ title: "Erro no microfone", description: "Nao foi possivel acessar o audio.", variant: "destructive" });
+            });
+          return;
+        }
         console.error("Mic error:", err);
         setMicReady(false);
-        logAudioStep("microphone-error", { message: String(err?.message || err) });
+        logAudioStep("microphone-error", { message });
         toast({ title: "Erro no microfone", description: "Nao foi possivel acessar o audio.", variant: "destructive" });
       });
 
@@ -1642,27 +1775,22 @@ export default function RecordingRoom() {
 
   const handleDownloadTake = useCallback(async (take: any) => {
     try {
-      const streamUrl = await validateTakeStreamLink(take);
-      const response = await fetch(streamUrl, {
-        credentials: "include",
-      });
-      if (!response.ok) {
-        throw new Error(`Falha no download (${response.status})`);
-      }
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
+      const payload = await authFetch(`/api/takes/${take.id}/download-link`);
+      const url = String(payload?.url || "");
+      if (!url) throw new Error("Link temporário indisponível");
       const a = document.createElement("a");
       a.href = url;
-      a.download = `take_${take.characterName}_${take.lineIndex}.wav`;
+      a.download = take?.fileName || `take_${take.characterName}_${take.lineIndex}.wav`;
+      a.target = "_blank";
+      a.rel = "noopener";
       document.body.appendChild(a);
       a.click();
-      window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     } catch (err) {
       toast({ title: "Erro ao baixar take", description: String((err as any)?.message || err), variant: "destructive" });
       throw err;
     }
-  }, [toast, validateTakeStreamLink]);
+  }, [toast]);
 
   const handleSaveProfile = (profile: RecordingProfile) => {
     setRecordingProfile(profile);
@@ -1937,6 +2065,52 @@ export default function RecordingRoom() {
                 </div>
               </div>
             )}
+            <div className="px-6 pt-3 pb-2 border-b border-border/40">
+              <div className="grid gap-2 md:grid-cols-5">
+                <input
+                  value={recordingsSearch}
+                  onChange={(event) => setRecordingsSearch(event.target.value)}
+                  placeholder="Buscar por personagem, usuário ou ID"
+                  className="h-8 md:col-span-2 rounded-md border border-border bg-background px-2 text-xs"
+                />
+                <select
+                  value={recordingsSortBy}
+                  onChange={(event) => setRecordingsSortBy(event.target.value as any)}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                >
+                  <option value="createdAt">Data</option>
+                  <option value="durationSeconds">Duração</option>
+                  <option value="lineIndex">Linha</option>
+                  <option value="characterName">Personagem</option>
+                </select>
+                <select
+                  value={recordingsSortDir}
+                  onChange={(event) => setRecordingsSortDir(event.target.value as any)}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                >
+                  <option value="desc">Desc</option>
+                  <option value="asc">Asc</option>
+                </select>
+                <select
+                  value={String(recordingsPlaybackRate)}
+                  onChange={(event) => setRecordingsPlaybackRate(Number(event.target.value))}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                >
+                  <option value="0.75">0.75x</option>
+                  <option value="1">1x</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="2">2x</option>
+                </select>
+              </div>
+              <div className="grid gap-2 md:grid-cols-4 mt-2">
+                <input type="date" value={recordingsDateFrom} onChange={(event) => setRecordingsDateFrom(event.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs" />
+                <input type="date" value={recordingsDateTo} onChange={(event) => setRecordingsDateTo(event.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs" />
+                <div className="md:col-span-2 text-[11px] text-muted-foreground flex items-center justify-end">
+                  {recordingsResponse?.total || 0} gravações · página {recordingsResponse?.page || 1}/{recordingsResponse?.pageCount || 1}
+                </div>
+              </div>
+            </div>
             <div className="px-6 py-4 max-h-[420px] overflow-y-auto custom-scrollbar">
               <div className="grid grid-cols-12 text-[10px] uppercase text-muted-foreground tracking-wider pb-2 border-b border-border/60">
                 <span className="col-span-2">Linha</span>
@@ -2027,10 +2201,7 @@ export default function RecordingRoom() {
                             )}
                             {canDiscardTake && (
                               <button
-                                onClick={async () => {
-                                  await handleDiscardTake(take);
-                                  emitVideoEvent("take-status", { status: "discarded", takeId: take.id, targetUserId: take.voiceActorId });
-                                }}
+                                onClick={() => { setDiscardModalTake(take); setDiscardFinalStep(false); }}
                                 className="h-7 px-2 rounded-md bg-destructive/20 text-destructive hover:bg-destructive/30 text-[10px]"
                                 title="Descartar take"
                                 data-testid={`button-discard-recording-${take.id}`}
@@ -2045,7 +2216,16 @@ export default function RecordingRoom() {
                     </div>
                     {recordingsPlayerOpenId === take.id && (
                       <div className="mt-2 pl-[16.8%]">
-                        <audio controls className="w-full h-8" src={getTakeStreamUrl(take)} preload="none" />
+                        <audio
+                          ref={(node) => { recordingRowAudioRefs.current[String(take.id)] = node; }}
+                          controls
+                          className="w-full h-8"
+                          src={getTakeStreamUrl(take)}
+                          preload="none"
+                          onLoadedMetadata={(event) => {
+                            event.currentTarget.playbackRate = recordingsPlaybackRate;
+                          }}
+                        />
                       </div>
                     )}
                   </div>
@@ -2056,6 +2236,59 @@ export default function RecordingRoom() {
                   </div>
                 )}
               </div>
+            </div>
+            <div className="px-6 pb-4 flex items-center justify-between gap-2">
+              <button
+                onClick={() => setRecordingsPage((prev) => Math.max(1, prev - 1))}
+                disabled={(recordingsResponse?.page || 1) <= 1}
+                className="h-8 px-3 rounded-md border border-border bg-background text-xs disabled:opacity-40"
+              >
+                Página anterior
+              </button>
+              <button
+                onClick={() => setRecordingsPage((prev) => Math.min(recordingsResponse?.pageCount || 1, prev + 1))}
+                disabled={(recordingsResponse?.page || 1) >= (recordingsResponse?.pageCount || 1)}
+                className="h-8 px-3 rounded-md border border-border bg-background text-xs disabled:opacity-40"
+              >
+                Próxima página
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {discardModalTake && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm" style={{ zIndex: UI_LAYER_BASE.confirmationModal }}>
+          <div className="w-[calc(100vw-32px)] max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl">
+            <h3 className="text-sm font-bold text-foreground">Confirmação de descarte</h3>
+            <p className="text-xs text-muted-foreground mt-2">
+              {discardFinalStep
+                ? "Confirma definitivamente o descarte lógico deste take? O arquivo permanecerá auditável."
+                : "Primeira etapa: confirmar intenção de descartar este take."}
+            </p>
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                onClick={() => { setDiscardModalTake(null); setDiscardFinalStep(false); }}
+                className="h-9 px-3 rounded-lg bg-muted/70 text-muted-foreground hover:text-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={async () => {
+                  if (!discardFinalStep) {
+                    setDiscardFinalStep(true);
+                    return;
+                  }
+                  await handleDiscardTake(discardModalTake);
+                  emitVideoEvent("take-status", { status: "discarded", takeId: discardModalTake.id, targetUserId: discardModalTake.voiceActorId });
+                }}
+                className={cn(
+                  "h-9 px-3 rounded-lg text-white",
+                  discardFinalStep ? "bg-destructive hover:bg-destructive/90" : "bg-amber-600 hover:bg-amber-500"
+                )}
+              >
+                {discardFinalStep ? "Confirmar descarte" : "Prosseguir"}
+              </button>
             </div>
           </div>
         </div>

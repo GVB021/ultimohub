@@ -9,6 +9,7 @@ const studioAdminPath = join(root, "client/src/studio/pages/studio-admin.tsx");
 const routesPath = join(root, "server/routes.ts");
 const videoSyncPath = join(root, "server/video-sync.ts");
 const dailyMeetPath = join(root, "client/src/studio/components/video/DailyMeetPanel.tsx");
+const devicePanelPath = join(root, "client/src/studio/components/audio/DeviceSettingsPanel.tsx");
 
 test("RecordingRoom cabeçalho usa botão PAINEL e remove ações antigas", () => {
   const room = readFileSync(roomPath, "utf8");
@@ -53,9 +54,14 @@ test("API inclui endpoints de timecode por estúdio e auditoria de sessão", () 
   assert.match(routes, /\/api\/studios\/:studioId\/timecode-format/);
   assert.match(routes, /\/api\/sessions\/:sessionId\/audit-events/);
   assert.match(routes, /\/api\/sessions\/:sessionId\/recordings/);
+  assert.match(routes, /\/api\/takes\/:id\/download-link/);
+  assert.match(routes, /\/api\/takes\/:id\/discard/);
   assert.match(routes, /recordings\.access\.privileged/);
   assert.match(routes, /\[Recordings\] Fetch requested/);
   assert.match(routes, /\[Recordings\] Database fetch failure/);
+  assert.match(routes, /SUPABASE_DOWNLOAD_URL_TTL_SECONDS/);
+  assert.match(routes, /MAX_TAKE_FILE_SIZE_BYTES/);
+  assert.match(routes, /checksumMd5/);
   assert.match(routes, /isPreferred: z\.coerce\.boolean\(\)\.optional\(\)/);
   assert.match(routes, /normalizeStudioRole/);
 });
@@ -92,7 +98,7 @@ test("RecordingRoom usa websocket de sync e valida links de áudio", () => {
   assert.match(room, /\/ws\/video-sync\?sessionId=/);
   assert.match(room, /validateTakeStreamLink/);
   assert.match(room, /Range: "bytes=0-1"/);
-  assert.match(room, /audio controls/);
+  assert.match(room, /controls\s+className="w-full h-8"/);
   assert.match(room, /\[Room\]\[Recordings\] iniciando leitura de takes/);
   assert.match(room, /Falha de conexão com o banco de áudio/);
   assert.match(room, /Mídia disponível/);
@@ -121,6 +127,18 @@ test("DailyMeetPanel aplica limites mobile e gesto de swipe para colapsar", () =
   assert.match(daily, /zIndexBase = 1150/);
 });
 
+test("Painel avançado de áudio exibe VU, teste de mic, lossless e seletor de saída", () => {
+  const panel = readFileSync(devicePanelPath, "utf8");
+  assert.match(panel, /Painel Avançado de Áudio/);
+  assert.match(panel, /Testar Microfone \(5s\)/);
+  assert.match(panel, /Teste de saída \(1kHz \/ 2s\)/);
+  assert.match(panel, /setMeterDb/);
+  assert.match(panel, /Lossless \(48kHz \/ 24-bit\)/);
+  assert.match(panel, /Acesso ao microfone/);
+  assert.match(panel, /Controle de dispositivos/);
+  assert.match(panel, /vhub_audio_permission_consent/);
+});
+
 test("Websocket restringe concessão de controle de texto para dublador e aluno", () => {
   const videoSync = readFileSync(videoSyncPath, "utf8");
   assert.match(videoSync, /canReceiveTextControl/);
@@ -133,7 +151,8 @@ test("RecordingRoom aplica exclusão otimista de takes com rollback e animação
   const room = readFileSync(roomPath, "utf8");
   assert.match(room, /setOptimisticRemovingTakeIds/);
   assert.match(room, /queryClient\.setQueryData\(takesQueryKey/);
-  assert.match(room, /queryClient\.setQueryData\(recordingsQueryKey/);
+  assert.match(room, /invalidateQueries\(\{ queryKey: recordingsQueryKey, exact: false \}\)/);
+  assert.match(room, /\/api\/takes\/\$\{takeId\}\/discard/);
   assert.match(room, /opacity-0 -translate-y-2 scale-\[0\.98\]/);
   assert.match(room, /transition-all duration-300/);
   assert.match(room, /Falha ao descartar take/);

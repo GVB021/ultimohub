@@ -303,3 +303,42 @@ export async function downloadFromSupabaseStorageUrl(audioUrl: string, opts?: { 
   }
   return downloadFromSupabaseStorage(parsed, opts);
 }
+
+export async function createSignedSupabaseUrlFromPublicUrl(audioUrl: string, expiresInSeconds: number) {
+  requireSupabase();
+  const parsed = parseSupabaseStorageUrl(audioUrl);
+  if (!parsed) {
+    throw new Error("Unsupported Supabase URL");
+  }
+  const baseUrl = getSupabaseBaseUrl();
+  const bucket = String(parsed.bucket || "").trim();
+  const objectPath = joinPath(parsed.path);
+  if (!bucket || !objectPath) throw new Error("Invalid Supabase object reference");
+
+  const signUrl = `${baseUrl}/storage/v1/object/sign/${encodeURIComponent(bucket)}/${objectPath
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")}`;
+
+  const res = await fetchWithRetry(
+    signUrl,
+    {
+      method: "POST",
+      headers: supabaseHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ expiresIn: Math.max(60, Math.floor(expiresInSeconds || 0)) }),
+    },
+    { op: "storage.object.sign", attemptHint: `${bucket}/${objectPath}` },
+    { retries: 2, baseDelayMs: 250 },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Supabase sign failed: HTTP ${res.status} ${text}`.trim());
+  }
+  const payload = await res.json().catch(() => ({} as any));
+  const signedPath = String(payload?.signedURL || payload?.signedUrl || "").trim();
+  if (!signedPath) {
+    throw new Error("Supabase sign response missing signedURL");
+  }
+  if (/^https?:\/\//i.test(signedPath)) return signedPath;
+  return `${baseUrl}${signedPath.startsWith("/") ? "" : "/"}${signedPath}`;
+}
