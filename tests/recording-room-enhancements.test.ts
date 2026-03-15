@@ -8,12 +8,18 @@ const roomPath = join(root, "client/src/studio/pages/room.tsx");
 const studioAdminPath = join(root, "client/src/studio/pages/studio-admin.tsx");
 const routesPath = join(root, "server/routes.ts");
 const videoSyncPath = join(root, "server/video-sync.ts");
+const dailyMeetPath = join(root, "client/src/studio/components/video/DailyMeetPanel.tsx");
 
 test("RecordingRoom cabeçalho usa botão PAINEL e remove ações antigas", () => {
   const room = readFileSync(roomPath, "utf8");
   assert.match(room, /PAINEL/);
   assert.doesNotMatch(room, /Trocar Estúdio/);
   assert.doesNotMatch(room, /button-room-logout/);
+  assert.doesNotMatch(room, /setTakesPopupOpen/);
+  assert.doesNotMatch(room, /Headphones/);
+  assert.match(room, /button-mobile-open-shortcuts/);
+  assert.match(room, /button-mobile-room-panel/);
+  assert.match(room, /canAccessDashboard/);
 });
 
 test("RecordingRoom expõe filtros e labels novos de rolagem", () => {
@@ -48,14 +54,25 @@ test("API inclui endpoints de timecode por estúdio e auditoria de sessão", () 
   assert.match(routes, /\/api\/sessions\/:sessionId\/audit-events/);
   assert.match(routes, /\/api\/sessions\/:sessionId\/recordings/);
   assert.match(routes, /recordings\.access\.privileged/);
+  assert.match(routes, /\[Recordings\] Fetch requested/);
+  assert.match(routes, /\[Recordings\] Database fetch failure/);
   assert.match(routes, /isPreferred: z\.coerce\.boolean\(\)\.optional\(\)/);
-  assert.match(routes, /role === "master"/);
+  assert.match(routes, /normalizeStudioRole/);
+});
+
+test("API normaliza permissões de exclusão de takes por papel de estúdio", () => {
+  const routes = readFileSync(routesPath, "utf8");
+  assert.match(routes, /canManageSessionTakes/);
+  assert.match(routes, /map\(normalizeStudioRole\)/);
+  assert.match(routes, /participantRole === "diretor"/);
+  assert.match(routes, /participantRole === "studio_admin"/);
 });
 
 test("RecordingRoom aplica controle de acesso por perfil e exibe aba Liberar Texto", () => {
   const room = readFileSync(roomPath, "utf8");
-  assert.match(room, /canViewPresenceForRole/);
-  assert.match(room, /canReleaseTextForRole/);
+  assert.match(room, /UI_ROLE_PERMISSIONS/);
+  assert.match(room, /hasUiPermission/);
+  assert.match(room, /resolveUiRole/);
   assert.match(room, /button-room-release-text/);
   assert.match(room, /Liberar Texto/);
   assert.match(room, /button-toggle-text-control-/);
@@ -76,6 +93,11 @@ test("RecordingRoom usa websocket de sync e valida links de áudio", () => {
   assert.match(room, /validateTakeStreamLink/);
   assert.match(room, /Range: "bytes=0-1"/);
   assert.match(room, /audio controls/);
+  assert.match(room, /\[Room\]\[Recordings\] iniciando leitura de takes/);
+  assert.match(room, /Falha de conexão com o banco de áudio/);
+  assert.match(room, /Mídia disponível/);
+  assert.match(room, /UI_ROLE_PERMISSIONS/);
+  assert.match(room, /resolveUiRole/);
 });
 
 test("RecordingRoom aplica preroll de 3s e posroll adaptativo no loop", () => {
@@ -85,6 +107,18 @@ test("RecordingRoom aplica preroll de 3s e posroll adaptativo no loop", () => {
   assert.match(room, /Loop incompleto/);
   assert.match(room, /customLoop.start \/ videoDuration/);
   assert.match(room, /customLoop.end \/ videoDuration/);
+  assert.match(room, /loop-preparing/);
+  assert.match(room, /loop-silence-window/);
+  assert.match(room, /Preparando loop\.\.\. \(3s\)/);
+  assert.match(room, /Silêncio entre loops\.\.\. \(3s\)/);
+});
+
+test("DailyMeetPanel aplica limites mobile e gesto de swipe para colapsar", () => {
+  const daily = readFileSync(dailyMeetPath, "utf8");
+  assert.match(daily, /targetHeightRatio = isLandscape \? 0.3 : 0.25/);
+  assert.match(daily, /if \(delta > 35\) setIsMinimized\(true\)/);
+  assert.match(daily, /if \(delta < -35\) setIsMinimized\(false\)/);
+  assert.match(daily, /zIndexBase = 1150/);
 });
 
 test("Websocket restringe concessão de controle de texto para dublador e aluno", () => {

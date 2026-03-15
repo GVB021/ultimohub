@@ -25,7 +25,6 @@ import {
   Download,
   Loader2,
   Menu,
-  Headphones,
   Save,
   Repeat,
   ListMusic,
@@ -145,6 +144,16 @@ const SHORTCUT_LABELS: Record<keyof Shortcuts, string> = {
   loop: "Alternar Loop",
 };
 
+const UI_LAYER_BASE = {
+  playerControls: 160,
+  floatingButtons: 180,
+  chatPanel: 1150,
+  modalOverlay: 1400,
+  confirmationModal: 1500,
+  mobileDrawerOverlay: 1450,
+  mobileDrawerContent: 1500,
+} as const;
+
 function keyLabel(code: string) {
   if (code === "Space") return "Espaco";
   if (code.startsWith("Key")) return code.slice(3);
@@ -161,14 +170,27 @@ function normalizeRoomRole(role: unknown) {
   return value;
 }
 
-function canReleaseTextForRole(role: unknown) {
+type UiRole = "viewer" | "text_controller" | "audio_controller" | "admin";
+type UiPermission = "text_control" | "audio_control" | "presence_view" | "approve_take" | "discard_take" | "dashboard_access";
+
+const UI_ROLE_PERMISSIONS: Record<UiRole, UiPermission[]> = {
+  viewer: [],
+  text_controller: ["text_control", "presence_view"],
+  audio_controller: ["audio_control", "approve_take", "discard_take", "dashboard_access", "presence_view"],
+  admin: ["text_control", "audio_control", "approve_take", "discard_take", "dashboard_access", "presence_view"],
+};
+
+function resolveUiRole(role: unknown, controlledText: boolean): UiRole {
   const normalized = normalizeRoomRole(role);
-  return normalized === "diretor" || normalized === "studio_admin" || normalized === "master" || normalized === "platform_owner";
+  if (normalized === "platform_owner" || normalized === "master" || normalized === "studio_admin" || normalized === "diretor") return "admin";
+  if (normalized === "editor" || normalized === "text_controller") return "text_controller";
+  if (controlledText) return "text_controller";
+  if (normalized === "dublador" || normalized === "aluno") return "audio_controller";
+  return "viewer";
 }
 
-function canViewPresenceForRole(role: unknown) {
-  const normalized = normalizeRoomRole(role);
-  return normalized !== "dublador" && normalized !== "aluno";
+function hasUiPermission(role: UiRole, permission: UiPermission) {
+  return UI_ROLE_PERMISSIONS[role].includes(permission);
 }
 
 function canReceiveTextControl(role: unknown) {
@@ -359,7 +381,17 @@ function useRecordingsList(sessionId: string) {
   const cacheKey = `vhub_recordings_cache_${sessionId}`;
   const query = useQuery({
     queryKey: ["/api/sessions", sessionId, "recordings"],
-    queryFn: () => authFetch(`/api/sessions/${sessionId}/recordings`),
+    queryFn: async () => {
+      console.debug("[Room][Recordings] iniciando leitura de takes", { sessionId });
+      try {
+        const data = await authFetch(`/api/sessions/${sessionId}/recordings`);
+        console.debug("[Room][Recordings] takes carregados", { sessionId, total: Array.isArray(data) ? data.length : 0 });
+        return data;
+      } catch (error) {
+        console.error("[Room][Recordings] falha ao carregar takes", { sessionId, error });
+        throw error;
+      }
+    },
     enabled: Boolean(sessionId),
     refetchInterval: 5000,
     initialData: () => {
@@ -570,6 +602,11 @@ export default function RecordingRoom() {
   const [editingDraftValue, setEditingDraftValue] = useState("");
   const [recordingsPlayerOpenId, setRecordingsPlayerOpenId] = useState<string | null>(null);
   const [loopRangeMeta, setLoopRangeMeta] = useState<{ startIndex: number; endIndex: number } | null>(null);
+  const [loopPreparing, setLoopPreparing] = useState(false);
+  const [loopSilenceActive, setLoopSilenceActive] = useState(false);
+  const loopPreparationTimeoutRef = useRef<number | null>(null);
+  const loopSilenceTimeoutRef = useRef<number | null>(null);
+  const loopSilenceLockRef = useRef(false);
 
   const baseScriptLines: ScriptLine[] = useMemo(() => {
     if (!production?.scriptJson) return [];
@@ -656,11 +693,14 @@ export default function RecordingRoom() {
   }, [studioTimecode?.format]);
 
   const { data: takesList = [] } = useTakesList(sessionId);
-  const { data: recordingsList = [] } = useRecordingsList(sessionId);
-  const pendingApprovalTakes = useMemo(() => takesList.filter((take: any) => !take.isPreferred), [takesList]);
+  const {
+    data: recordingsList = [],
+    error: recordingsError,
+    isError: hasRecordingsError,
+  } = useRecordingsList(sessionId);
   const approvalTargetTake = useMemo(
-    () => pendingApprovalTakes.find((take: any) => take.id === approvalModalTakeId) || null,
-    [pendingApprovalTakes, approvalModalTakeId]
+    () => takesList.find((take: any) => String(take.id || "") === String(approvalModalTakeId || "")) || null,
+    [takesList, approvalModalTakeId]
   );
 
   const savedTakes = useMemo(() => {
@@ -670,6 +710,14 @@ export default function RecordingRoom() {
     });
     return s;
   }, [takesList]);
+  useEffect(() => {
+    if (!hasRecordingsError) return;
+    toast({
+      title: "Falha de conexão com o banco de áudio",
+      description: String((recordingsError as any)?.message || "Não foi possível carregar os takes"),
+      variant: "destructive",
+    });
+  }, [hasRecordingsError, recordingsError, toast]);
 
   const handleApproveTake = useCallback(async (take: any) => {
     const takeId = take.id;
@@ -749,10 +797,8 @@ export default function RecordingRoom() {
   const recordingsPreviewAudioRef = useRef<HTMLAudioElement>(null);
   const [recordingsPreviewId, setRecordingsPreviewId] = useState<string | null>(null);
 
-  const [takesPopupOpen, setTakesPopupOpen] = useState(false);
-  const [takePreviewId, setTakePreviewId] = useState<string | null>(null);
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
-  const takePreviewAudioRef = useRef<HTMLAudioElement>(null);
+  const [recordingAvailability, setRecordingAvailability] = useState<Record<string, "available" | "error">>({});
 
   const [textControlPopupOpen, setTextControlPopupOpen] = useState(false);
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
@@ -763,11 +809,15 @@ export default function RecordingRoom() {
     if (participantRole) return normalizeRoomRole(participantRole);
     return normalizeRoomRole(user?.role);
   }, [session?.participants, user?.id, user?.role]);
-  const isDirector = canReleaseTextForRole(mySessionRole);
-  const canReleaseText = canReleaseTextForRole(mySessionRole);
-  const canViewOnlineUsers = canViewPresenceForRole(mySessionRole);
-
-  const isPrivileged = isDirector || user?.role === "platform_owner";
+  const uiRole = useMemo(() => resolveUiRole(mySessionRole, Boolean(user?.id && textControllerUserIds.has(user.id))), [mySessionRole, user?.id, textControllerUserIds]);
+  const canReleaseText = hasUiPermission(uiRole, "text_control");
+  const canTextControl = hasUiPermission(uiRole, "text_control");
+  const canViewOnlineUsers = hasUiPermission(uiRole, "presence_view");
+  const canManageAudio = hasUiPermission(uiRole, "audio_control");
+  const canApproveTake = hasUiPermission(uiRole, "approve_take");
+  const canDiscardTake = hasUiPermission(uiRole, "discard_take");
+  const canAccessDashboard = hasUiPermission(uiRole, "dashboard_access");
+  const isPrivileged = canManageAudio || canTextControl;
   const scopedRecordings = useMemo(() => {
     const source = Array.isArray(recordingsList) ? recordingsList : [];
     const filtered = (isPrivileged && recordingsScope === "all")
@@ -775,10 +825,20 @@ export default function RecordingRoom() {
       : source.filter((take: any) => String(take.voiceActorId || "") === String(user?.id || "") || String(take.userId || "") === String(user?.id || ""));
     return [...filtered].sort((a: any, b: any) => new Date(String(b.createdAt || 0)).getTime() - new Date(String(a.createdAt || 0)).getTime());
   }, [recordingsList, isPrivileged, recordingsScope, user?.id]);
+  useEffect(() => {
+    setRecordingAvailability((prev) => {
+      const next: Record<string, "available" | "error"> = {};
+      scopedRecordings.forEach((take: any) => {
+        const id = String(take?.id || "");
+        if (!id) return;
+        next[id] = prev[id] || (take?.audioUrl || take?.id ? "available" : "error");
+      });
+      return next;
+    });
+  }, [scopedRecordings]);
   const isApproverRole = useCallback((role: string | undefined | null) => {
     if (!role) return false;
-    const normalized = role.toLowerCase();
-    return normalized === "director" || normalized === "diretor" || normalized === "studio_admin" || normalized === "master" || normalized === "platform_owner";
+    return hasUiPermission(resolveUiRole(role, false), "approve_take");
   }, []);
   const hasApproverPresent = useMemo(() => {
     return presenceUsers.some((p: any) => isApproverRole(p?.role) && p?.userId !== user?.id);
@@ -795,12 +855,6 @@ export default function RecordingRoom() {
   const textControlCandidates = useMemo(() => {
     return presenceUsers.filter((presence: any) => canReceiveTextControl(presence?.role));
   }, [presenceUsers]);
-
-  const canTextControl = useMemo(() => {
-    if (isPrivileged) return true;
-    if (user && textControllerUserIds.has(user.id)) return true;
-    return false;
-  }, [isPrivileged, user, textControllerUserIds]);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -1016,12 +1070,25 @@ export default function RecordingRoom() {
         setCurrentLine(lineIndex);
       }
 
-      if (isLooping) {
-        const effectivePreRoll = isLooping ? 3 : preRoll;
-        const effectivePostRoll = isLooping ? postRoll : postRoll;
-        const range = customLoop || (currentScriptLine ? { start: currentScriptLine.start - effectivePreRoll, end: (currentScriptLine.end || currentScriptLine.start + 2) + effectivePostRoll } : null);
-        if (range && time >= range.end) {
-          video.currentTime = Math.max(0, range.start);
+      if (isLooping && customLoop && !loopPreparing && !loopSilenceLockRef.current) {
+        const range = { start: Math.max(0, customLoop.start), end: Math.max(customLoop.start, customLoop.end) };
+        if (time >= range.end) {
+          loopSilenceLockRef.current = true;
+          setLoopSilenceActive(true);
+          video.pause();
+          emitVideoEvent("pause", { currentTime: video.currentTime });
+          emitVideoEvent("loop-silence-window", { start: range.start, end: range.end, delayMs: 3000 });
+          if (loopSilenceTimeoutRef.current) window.clearTimeout(loopSilenceTimeoutRef.current);
+          loopSilenceTimeoutRef.current = window.setTimeout(() => {
+            const node = videoRef.current;
+            if (!node) return;
+            node.currentTime = range.start;
+            emitVideoEvent("seek", { currentTime: range.start });
+            node.play().catch(() => {});
+            emitVideoEvent("play", { currentTime: range.start });
+            setLoopSilenceActive(false);
+            loopSilenceLockRef.current = false;
+          }, 3000);
         }
       }
     };
@@ -1034,7 +1101,7 @@ export default function RecordingRoom() {
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("durationchange", onDurationChange);
     };
-  }, [scriptLines, currentLine, isLooping, customLoop, preRoll, postRoll, currentScriptLine]);
+  }, [scriptLines, currentLine, isLooping, customLoop, emitVideoEvent, loopPreparing]);
 
   useEffect(() => {
     if (deviceSettingsOpen) return;
@@ -1227,6 +1294,7 @@ export default function RecordingRoom() {
     if (!persisted) {
       throw new Error("Persistência inválida: take não encontrado na aba de gravações.");
     }
+    setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "available" }));
     return take;
   }, [recordingProfile, sessionId, user?.id, user?.displayName, user?.fullName, queryClient, logAudioStep]);
 
@@ -1332,7 +1400,7 @@ export default function RecordingRoom() {
         toast({ title: "Take salvo automaticamente" });
         await logFeatureAudit("room.take.saved_without_approver", { lineIndex });
       } else {
-        toast({ title: isDirector ? "Take recebido para aprovação" : "Take enviado para aprovação" });
+        toast({ title: canApproveTake ? "Take recebido para aprovação" : "Take enviado para aprovação" });
       }
       setRecordingStatus("idle");
       setLastRecording(null);
@@ -1363,19 +1431,38 @@ export default function RecordingRoom() {
     } finally {
       setIsSaving(false);
     }
-  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, isDirector, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id, isLooping, customLoop]);
+  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, canApproveTake, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id, isLooping, customLoop]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
+      if (isLooping && customLoop) {
+        const loopStart = Math.max(0, customLoop.start);
+        video.pause();
+        video.currentTime = loopStart;
+        emitVideoEvent("seek", { currentTime: loopStart });
+        if (loopPreparationTimeoutRef.current) window.clearTimeout(loopPreparationTimeoutRef.current);
+        setLoopPreparing(true);
+        emitVideoEvent("loop-preparing", { loopStart, delayMs: 3000 });
+        loopPreparationTimeoutRef.current = window.setTimeout(() => {
+          const node = videoRef.current;
+          if (!node) return;
+          node.currentTime = loopStart;
+          emitVideoEvent("seek", { currentTime: loopStart });
+          node.play().catch(() => {});
+          emitVideoEvent("play", { currentTime: loopStart });
+          setLoopPreparing(false);
+        }, 3000);
+        return;
+      }
       video.play().catch(() => {});
       emitVideoEvent("play", { currentTime: video.currentTime });
     } else {
       video.pause();
       emitVideoEvent("pause", { currentTime: video.currentTime });
     }
-  }, [emitVideoEvent]);
+  }, [emitVideoEvent, isLooping, customLoop]);
 
   const handleStopPlayback = useCallback(() => {
     const video = videoRef.current;
@@ -1573,6 +1660,7 @@ export default function RecordingRoom() {
       document.body.removeChild(a);
     } catch (err) {
       toast({ title: "Erro ao baixar take", description: String((err as any)?.message || err), variant: "destructive" });
+      throw err;
     }
   }, [toast, validateTakeStreamLink]);
 
@@ -1598,6 +1686,28 @@ export default function RecordingRoom() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [shortcuts, handlePlayPause, handleStopRecording, handleStopPlayback, recordingStatus, startCountdown, seek, handleLoopButton]);
+
+  useEffect(() => {
+    if (isLooping) return;
+    setLoopPreparing(false);
+    setLoopSilenceActive(false);
+    loopSilenceLockRef.current = false;
+    if (loopPreparationTimeoutRef.current) {
+      window.clearTimeout(loopPreparationTimeoutRef.current);
+      loopPreparationTimeoutRef.current = null;
+    }
+    if (loopSilenceTimeoutRef.current) {
+      window.clearTimeout(loopSilenceTimeoutRef.current);
+      loopSilenceTimeoutRef.current = null;
+    }
+  }, [isLooping]);
+
+  useEffect(() => {
+    return () => {
+      if (loopPreparationTimeoutRef.current) window.clearTimeout(loopPreparationTimeoutRef.current);
+      if (loopSilenceTimeoutRef.current) window.clearTimeout(loopSilenceTimeoutRef.current);
+    };
+  }, []);
 
   if (sessionLoading || productionLoading) {
     return (
@@ -1735,118 +1845,8 @@ export default function RecordingRoom() {
         />
       )}
 
-      {takesPopupOpen && isDirector && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
-          <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[520px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
-              <span className="text-sm font-semibold text-foreground">Takes da Sessao</span>
-              <button
-                onClick={() => {
-                  setTakesPopupOpen(false);
-                  if (takePreviewAudioRef.current) {
-                    takePreviewAudioRef.current.pause();
-                    takePreviewAudioRef.current.currentTime = 0;
-                  }
-                  setTakePreviewId(null);
-                }}
-                className="transition-colors text-muted-foreground hover:text-foreground"
-                data-testid="button-close-takes-popup"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="px-6 py-5">
-              <audio ref={takePreviewAudioRef} preload="none" />
-              <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
-                {pendingApprovalTakes.map((take: any) => (
-                  <div
-                    key={take.id}
-                    className={cn(
-                      "flex items-center gap-3 px-3 py-2 rounded-lg bg-background/75 border border-border/70 transition-all duration-300",
-                      optimisticRemovingTakeIds.has(String(take.id)) && "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none"
-                    )}
-                  >
-                    <button
-                      onClick={() => {
-                        const audio = takePreviewAudioRef.current;
-                        if (!audio) return;
-                        if (takePreviewId === take.id) {
-                          audio.pause();
-                          audio.currentTime = 0;
-                          setTakePreviewId(null);
-                          return;
-                        }
-                        setTakePreviewId(take.id);
-                        audio.volume = deviceSettings.monitorVolume;
-                        audio.src = `/api/takes/${take.id}/stream`;
-                        audio.play().catch((err) => {
-                          logAudioStep("take-preview-error", { takeId: take.id, message: String(err?.message || err) });
-                          toast({ title: "Falha ao reproduzir take", variant: "destructive" });
-                          setTakePreviewId(null);
-                        });
-                        audio.onended = () => setTakePreviewId(null);
-                      }}
-                      className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors bg-muted/60 text-foreground hover:bg-muted"
-                      data-testid={`button-play-take-${take.id}`}
-                    >
-                      {takePreviewId === take.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
-                    </button>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono tabular-nums text-muted-foreground">#{take.lineIndex}</span>
-                        <span className="text-xs font-medium truncate text-foreground">{take.characterName || "Take"}</span>
-                        <span className="ml-auto text-xs font-mono text-muted-foreground">{take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : ""}</span>
-                      </div>
-                      {isPrivileged && (
-                        <div className="text-[10px] truncate mt-0.5 text-muted-foreground">
-                          {take.voiceActorName || take.userName || take.userId || take.voiceActorId}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setApprovalModalTakeId(take.id)}
-                        className="px-3 h-8 rounded-lg text-xs font-semibold bg-primary/20 text-primary hover:bg-primary/30 transition-colors flex items-center gap-1"
-                        title="Aprovar e salvar take"
-                      >
-                        <Save className="w-3.5 h-3.5" />
-                        Aprovar
-                      </button>
-                      <button
-                        onClick={async () => {
-                          await handleDiscardTake(take);
-                          emitVideoEvent("take-status", { status: "discarded", takeId: take.id, targetUserId: take.voiceActorId });
-                        }}
-                        className="px-2.5 h-8 rounded-lg text-xs font-medium bg-destructive/15 text-destructive hover:bg-destructive/25 transition-colors"
-                        title="Descartar take"
-                        disabled={optimisticRemovingTakeIds.has(String(take.id))}
-                      >
-                        Descartar
-                      </button>
-                      <button
-                        onClick={() => handleDownloadTake(take)}
-                        className="p-2 rounded-lg transition-colors text-muted-foreground bg-muted/60 hover:text-foreground hover:bg-muted"
-                        title="Baixar take"
-                        data-testid={`button-download-take-popup-${take.id}`}
-                      >
-                        <Download className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {pendingApprovalTakes.length === 0 && (
-                  <div className="text-sm text-center py-10 text-muted-foreground">
-                    Nenhum take pendente de aprovação
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {textControlPopupOpen && canReleaseText && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
+        <div className="absolute inset-0 flex items-center justify-center bg-background/70 backdrop-blur-md" style={{ zIndex: UI_LAYER_BASE.modalOverlay }}>
           <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[620px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
               <div className="flex items-center gap-3">
@@ -1906,7 +1906,7 @@ export default function RecordingRoom() {
       )}
 
       {recordingsOpen && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-md">
+        <div className="absolute inset-0 flex items-center justify-center bg-background/70 backdrop-blur-md" style={{ zIndex: UI_LAYER_BASE.modalOverlay }}>
           <div className="rounded-2xl w-[calc(100vw-32px)] max-w-[720px] overflow-hidden border border-border/70 bg-card/95 shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-border/70">
               <div className="flex items-center gap-3">
@@ -1948,13 +1948,23 @@ export default function RecordingRoom() {
               </div>
               <div className="space-y-1 mt-2">
                 {scopedRecordings.map((take: any) => (
-                  <div key={take.id} className="rounded-md hover:bg-muted/40 px-2 py-2">
+                  <div
+                    key={take.id}
+                    className={cn(
+                      "rounded-md hover:bg-muted/40 px-2 py-2 transition-all duration-300",
+                      optimisticRemovingTakeIds.has(String(take.id)) && "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none"
+                    )}
+                  >
                     <div className="grid grid-cols-12 items-center text-xs">
                       <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
                       <span className="col-span-3 truncate">{take.characterName || "-"}</span>
                       <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
-                      <span className={cn("col-span-2", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
-                        {take.status === "approved" ? "Aprovado" : "Pendente"}
+                      <span className={cn("col-span-2 flex items-center gap-1.5", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
+                        <span>{take.status === "approved" ? "Aprovado" : "Pendente"}</span>
+                        <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", recordingAvailability[String(take.id || "")] === "error" ? "bg-red-500" : "bg-emerald-500")} />
+                        <span className={cn("text-[10px]", recordingAvailability[String(take.id || "")] === "error" ? "text-red-500" : "text-emerald-500")}>
+                          {recordingAvailability[String(take.id || "")] === "error" ? "Mídia indisponível" : "Mídia disponível"}
+                        </span>
                       </span>
                       <span className="col-span-1 text-right font-mono text-muted-foreground">
                         {take.durationSeconds ? `${Number(take.durationSeconds).toFixed(1)}s` : "-"}
@@ -1972,11 +1982,13 @@ export default function RecordingRoom() {
                             }
                             try {
                               const streamUrl = await validateTakeStreamLink(take);
+                              setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "available" }));
                               audio.src = streamUrl;
                               await audio.play();
                               setRecordingsPreviewId(take.id);
                               setRecordingsPlayerOpenId(take.id);
                             } catch (err) {
+                              setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "error" }));
                               toast({ title: "Erro ao reproduzir take", description: String((err as any)?.message || err), variant: "destructive" });
                             }
                           }}
@@ -1987,13 +1999,48 @@ export default function RecordingRoom() {
                           {recordingsPreviewId === take.id ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
                         </button>
                         <button
-                          onClick={() => handleDownloadTake(take)}
+                          onClick={async () => {
+                            try {
+                              await handleDownloadTake(take);
+                              setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "available" }));
+                            } catch {
+                              setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "error" }));
+                            }
+                          }}
                           className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
                           title="Baixar take"
                           data-testid={`button-download-recording-${take.id}`}
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
+                        {(canApproveTake || canDiscardTake) && take.status !== "approved" && (
+                          <>
+                            {canApproveTake && (
+                              <button
+                                onClick={() => setApprovalModalTakeId(take.id)}
+                                className="h-7 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 text-[10px]"
+                                title="Aprovar take"
+                                data-testid={`button-approve-recording-${take.id}`}
+                              >
+                                Aprovar
+                              </button>
+                            )}
+                            {canDiscardTake && (
+                              <button
+                                onClick={async () => {
+                                  await handleDiscardTake(take);
+                                  emitVideoEvent("take-status", { status: "discarded", takeId: take.id, targetUserId: take.voiceActorId });
+                                }}
+                                className="h-7 px-2 rounded-md bg-destructive/20 text-destructive hover:bg-destructive/30 text-[10px]"
+                                title="Descartar take"
+                                data-testid={`button-discard-recording-${take.id}`}
+                                disabled={optimisticRemovingTakeIds.has(String(take.id))}
+                              >
+                                Descartar
+                              </button>
+                            )}
+                          </>
+                        )}
                       </div>
                     </div>
                     {recordingsPlayerOpenId === take.id && (
@@ -2015,7 +2062,7 @@ export default function RecordingRoom() {
       )}
 
       {approvalModalTakeId && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm" style={{ zIndex: UI_LAYER_BASE.confirmationModal }}>
           <div className="w-[calc(100vw-32px)] max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl">
             <h3 className="text-sm font-bold text-foreground">Confirmação de salvamento</h3>
             <p className="text-xs text-muted-foreground mt-2">
@@ -2080,7 +2127,8 @@ export default function RecordingRoom() {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 4 }}
-                  className="absolute top-full left-0 mt-2 w-64 rounded-xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2 z-[100]"
+                  className="absolute top-full left-0 mt-2 w-64 rounded-xl bg-popover/95 backdrop-blur-xl border border-border shadow-2xl p-2"
+                  style={{ zIndex: UI_LAYER_BASE.chatPanel }}
                 >
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 py-1.5 border-b border-border/60 mb-1">Selecionar personagem</div>
                   <div className="max-h-64 overflow-y-auto custom-scrollbar">
@@ -2135,16 +2183,6 @@ export default function RecordingRoom() {
             </button>
           ) : (
             <>
-              {isDirector && (
-                <button
-                  onClick={() => setTakesPopupOpen(true)}
-                  className="h-9 px-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 flex items-center gap-1.5"
-                  aria-label="Takes pendentes do diretor"
-                >
-                  <Headphones className="w-4 h-4" />
-                  <span className="text-[11px] font-semibold">{pendingApprovalTakes.length}</span>
-                </button>
-              )}
               <button
                 onClick={() => setRecordingsOpen(true)}
                 className="h-7 px-2 rounded-md bg-white/5 border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/10 flex items-center gap-1"
@@ -2163,16 +2201,6 @@ export default function RecordingRoom() {
                   Liberar Texto
                 </button>
               )}
-              <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
-                <button
-                  onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); }}
-                  className="h-7 px-2 rounded-md bg-white/5 border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/10 flex items-center gap-1"
-                  data-testid="button-room-panel"
-                >
-                  <Monitor className="w-3.5 h-3.5" />
-                  PAINEL
-                </button>
-              </Link>
               <button
                 onClick={() => setDeviceSettingsOpen(true)}
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
@@ -2189,6 +2217,18 @@ export default function RecordingRoom() {
               >
                 <Settings className="w-4 h-4" />
               </button>
+              {canAccessDashboard && (
+                <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
+                  <button
+                    onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); }}
+                    className="h-7 px-2 rounded-md bg-white/5 border border-white/10 text-[11px] text-muted-foreground hover:text-foreground hover:bg-white/10 flex items-center gap-1"
+                    data-testid="button-room-panel"
+                  >
+                    <Monitor className="w-3.5 h-3.5" />
+                    PAINEL
+                  </button>
+                </Link>
+              )}
             </>
           )}
         </div>
@@ -2272,13 +2312,14 @@ export default function RecordingRoom() {
 
               <button
                 onClick={() => setIsMuted((m) => !m)}
-                className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 text-white/60 hover:text-white transition-all hover:bg-black/60 z-30"
+                className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 text-white/60 hover:text-white transition-all hover:bg-black/60"
+                style={{ zIndex: UI_LAYER_BASE.floatingButtons }}
                 aria-label={isMuted ? "Ativar som" : "Desativar som"}
               >
                 {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
               </button>
 
-              <div className="absolute bottom-0 left-0 right-0 h-16 bg-black/80 backdrop-blur-md border-t border-white/10 flex items-center px-4 gap-4 z-40">
+              <div className="absolute bottom-0 left-0 right-0 h-16 bg-black/80 backdrop-blur-md border-t border-white/10 flex items-center px-4 gap-4" style={{ zIndex: UI_LAYER_BASE.playerControls }}>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => seek(-2)}
@@ -2289,6 +2330,7 @@ export default function RecordingRoom() {
                   </button>
                   <button
                     onClick={handlePlayPause}
+                    disabled={loopPreparing || loopSilenceActive}
                     className="w-10 h-10 rounded-full flex items-center justify-center transition-all bg-primary text-primary-foreground shadow-lg"
                     aria-label={isPlaying ? "Pausar" : "Reproduzir"}
                   >
@@ -2360,7 +2402,7 @@ export default function RecordingRoom() {
               </div>
               {recordingStatus === "recorded" && (
                 <div className="absolute bottom-20 left-3 right-3 h-9 rounded-lg bg-black/70 border border-white/10 flex items-center justify-between px-3 text-[11px] text-white/80">
-                  {isDirector ? (
+                  {canApproveTake ? (
                     <>
                       <span>Take pronto para aprovação do diretor.</span>
                       <button
@@ -2368,7 +2410,7 @@ export default function RecordingRoom() {
                         disabled={!lastUploadedTakeId}
                         className="h-7 px-2 rounded-md bg-primary/25 text-primary disabled:opacity-40 flex items-center gap-1"
                       >
-                        <Headphones className="w-3.5 h-3.5" />
+                        <Save className="w-3.5 h-3.5" />
                         Aprovar
                       </button>
                     </>
@@ -2379,11 +2421,13 @@ export default function RecordingRoom() {
                   )}
                 </div>
               )}
-              {(customLoop || loopSelectionMode !== "idle") && (
+              {(customLoop || loopSelectionMode !== "idle" || loopPreparing || loopSilenceActive) && (
                 <div className="absolute top-3 left-3 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/40 px-3 flex items-center text-[11px] text-indigo-100 z-30">
+                  {loopPreparing && "Preparando loop... (3s)"}
+                  {!loopPreparing && loopSilenceActive && "Silêncio entre loops... (3s)"}
                   {loopSelectionMode === "selecting-start" && "Loop: selecione a primeira fala"}
                   {loopSelectionMode === "selecting-end" && "Loop: selecione a última fala"}
-                  {loopSelectionMode === "idle" && customLoop && `Loop ativo ${formatLiveTimecode(customLoop.start)} - ${formatLiveTimecode(customLoop.end)}${loopRangeMeta ? ` · Linhas ${loopRangeMeta.startIndex + 1}-${loopRangeMeta.endIndex + 1}` : ""}`}
+                  {!loopPreparing && !loopSilenceActive && loopSelectionMode === "idle" && customLoop && `Loop ativo ${formatLiveTimecode(customLoop.start)} - ${formatLiveTimecode(customLoop.end)}${loopRangeMeta ? ` · Linhas ${loopRangeMeta.startIndex + 1}-${loopRangeMeta.endIndex + 1}` : ""}`}
                 </div>
               )}
             </div>
@@ -2549,8 +2593,8 @@ export default function RecordingRoom() {
           <>
             <Drawer.Root open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
               <Drawer.Portal>
-                <Drawer.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110]" />
-                <Drawer.Content className="bg-zinc-950 flex flex-col rounded-t-[32px] fixed bottom-0 left-0 right-0 z-[120] outline-none max-h-[90vh]">
+                <Drawer.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm" style={{ zIndex: UI_LAYER_BASE.mobileDrawerOverlay }} />
+                <Drawer.Content className="bg-zinc-950 flex flex-col rounded-t-[32px] fixed bottom-0 left-0 right-0 outline-none max-h-[90vh]" style={{ zIndex: UI_LAYER_BASE.mobileDrawerContent }}>
                   <div className="p-6 pb-12 overflow-y-auto">
                     <div className="mx-auto w-12 h-1.5 rounded-full bg-zinc-800 mb-8" />
                     <h2 className="text-xl font-bold mb-6 text-white">Menu do Estúdio</h2>
@@ -2617,6 +2661,42 @@ export default function RecordingRoom() {
                           <ChevronRight className="w-5 h-5 text-white/20" />
                         </button>
                       )}
+                      <button
+                        onClick={() => { setIsCustomizing(true); setMobileMenuOpen(false); }}
+                        className="w-full flex items-center justify-between p-5 rounded-2xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-all min-h-[56px]"
+                        data-testid="button-mobile-open-shortcuts"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-300">
+                            <Settings className="w-5 h-5" />
+                          </div>
+                          <div className="text-left">
+                            <div className="font-bold text-sm text-white">Atalhos do Teclado</div>
+                            <div className="text-[11px] text-white/40 uppercase tracking-wider">Configurações rápidas</div>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-5 h-5 text-white/20" />
+                      </button>
+                      {canAccessDashboard && (
+                        <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
+                          <button
+                            onClick={() => { logFeatureAudit("room.panel.redirect", { studioId }); setMobileMenuOpen(false); }}
+                            className="w-full flex items-center justify-between p-5 rounded-2xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-all min-h-[56px]"
+                            data-testid="button-mobile-room-panel"
+                          >
+                            <div className="flex items-center gap-4">
+                              <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-300">
+                                <Monitor className="w-5 h-5" />
+                              </div>
+                              <div className="text-left">
+                                <div className="font-bold text-sm text-white">Painel</div>
+                                <div className="text-[11px] text-white/40 uppercase tracking-wider">Voltar ao dashboard</div>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-5 h-5 text-white/20" />
+                          </button>
+                        </Link>
+                      )}
                     </div>
                   </div>
                 </Drawer.Content>
@@ -2678,7 +2758,7 @@ export default function RecordingRoom() {
         )}
       </AnimatePresence>
 
-      <DailyMeetPanel sessionId={sessionId} />
+      <DailyMeetPanel sessionId={sessionId} zIndexBase={UI_LAYER_BASE.chatPanel} />
     </div>
   );
 }

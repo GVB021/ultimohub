@@ -15,7 +15,7 @@ import {
   type Production, type Session,
   insertProductionSchema, insertCharacterSchema, insertTakeSchema, insertSessionSchema,
 } from "@shared/schema";
-import { normalizePlatformRole } from "@shared/roles";
+import { normalizePlatformRole, normalizeStudioRole } from "@shared/roles";
 import { httpSessions } from "@shared/models/auth";
 import { requireAuth, requireAdmin, requireStudioAccess, requireStudioRole } from "./middleware/auth";
 import { logger } from "./lib/logger";
@@ -255,12 +255,13 @@ async function verifySessionAccess(req: Request, res: Response, sessionId: strin
 async function canManageSessionTakes(user: any, sessionId: string, studioId: string): Promise<boolean> {
   const platformRole = normalizePlatformRole(user?.role);
   if (platformRole === "platform_owner") return true;
-  const studioRoles = await storage.getUserRolesInStudio(user.id, studioId);
+  const studioRoles = (await storage.getUserRolesInStudio(user.id, studioId)).map(normalizeStudioRole);
   if (studioRoles.includes("studio_admin")) return true;
   const participants = await storage.getSessionParticipants(sessionId);
-  const self = participants.find((p) => p.userId === user.id);
+  const self = participants.find((p) => String(p.userId || "") === String(user.id || ""));
   if (!self) return false;
-  return self.role === "director" || self.role === "diretor" || self.role === "studio_admin" || self.role === "master";
+  const participantRole = normalizeStudioRole(self.role);
+  return participantRole === "diretor" || participantRole === "studio_admin" || participantRole === "platform_owner";
 }
 
 function studioTimecodeSettingKey(studioId: string): string {
@@ -1106,25 +1107,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/sessions/:sessionId/recordings", requireAuth, async (req, res) => {
-    const session = await verifySessionAccess(req, res, req.params.sessionId);
-    if (!session) return;
-    const user = (req as any).user!;
-    const canManage = await canManageSessionTakes(user, req.params.sessionId, session.studioId);
-    const takesList = annotateTakeVersions(await storage.getSessionTakesWithDetails(req.params.sessionId));
-    if (canManage) {
-      await storage.createAuditLog({
+    try {
+      const session = await verifySessionAccess(req, res, req.params.sessionId);
+      if (!session) return;
+      const user = (req as any).user!;
+      logger.info("[Recordings] Fetch requested", {
+        sessionId: req.params.sessionId,
         userId: user.id,
-        action: "recordings.access.privileged",
-        details: JSON.stringify({ sessionId: req.params.sessionId, count: takesList.length }),
       });
-      res.status(200).json(takesList);
-      return;
-    }
-    res.status(200).json(
-      takesList.filter(
+      const canManage = await canManageSessionTakes(user, req.params.sessionId, session.studioId);
+      const takesList = annotateTakeVersions(await storage.getSessionTakesWithDetails(req.params.sessionId));
+      if (canManage) {
+        await storage.createAuditLog({
+          userId: user.id,
+          action: "recordings.access.privileged",
+          details: JSON.stringify({ sessionId: req.params.sessionId, count: takesList.length }),
+        });
+        logger.info("[Recordings] Privileged list returned", {
+          sessionId: req.params.sessionId,
+          userId: user.id,
+          count: takesList.length,
+        });
+        res.status(200).json(takesList);
+        return;
+      }
+      const scoped = takesList.filter(
         (take: any) => String(take.voiceActorId || "") === String(user.id || "") || String(take.userId || "") === String(user.id || "")
-      )
-    );
+      );
+      logger.info("[Recordings] Scoped list returned", {
+        sessionId: req.params.sessionId,
+        userId: user.id,
+        count: scoped.length,
+      });
+      res.status(200).json(scoped);
+    } catch (error: any) {
+      logger.error("[Recordings] Database fetch failure", {
+        sessionId: req.params.sessionId,
+        userId: (req as any)?.user?.id,
+        message: error?.message,
+      });
+      res.status(500).json({ message: "Falha ao consultar gravações no banco de dados" });
+    }
   });
 
   app.post("/api/takes/:id/prefer", requireAuth, async (req, res) => {

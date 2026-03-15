@@ -1260,6 +1260,9 @@ function SessionsSection() {
                     <td className="p-3">
                       <div className="font-medium">{sess.title}</div>
                       <div className="text-xs text-muted-foreground">{sess.durationMinutes} min</div>
+                      <div className="text-xs text-muted-foreground md:hidden mt-0.5">
+                        {sess.scheduledAt ? new Date(sess.scheduledAt).toLocaleString() : "—"}
+                      </div>
                     </td>
                     <td className="p-3">
                       <Badge variant={statusColor(sess.status)}>{sess.status}</Badge>

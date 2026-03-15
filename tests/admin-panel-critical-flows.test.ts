@@ -42,6 +42,8 @@ test("frontend admin expõe exportacao, auditoria de usuario e gestao de sessoes
   assert.match(admin, /button-cleanup-auth-sessions/);
   assert.match(admin, /button-force-logout-user/);
   assert.match(admin, /button-cleanup-expired-sessions/);
+  assert.match(admin, /md:hidden mt-0\.5/);
+  assert.match(admin, /sess\.scheduledAt \? new Date\(sess\.scheduledAt\)\.toLocaleString\(\) : "—"/);
 });
 
 test("frontend admin redireciona gestão de estúdio para página dedicada", () => {

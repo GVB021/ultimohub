@@ -1,23 +1,35 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import DailyIframe from "@daily-co/daily-js";
 import { Video, VideoOff, Mic, MicOff, PhoneOff, Minimize2, Maximize2, RefreshCw } from "lucide-react";
 import { authFetch } from "@studio/lib/auth-fetch";
 
 interface DailyMeetPanelProps {
   sessionId: string;
+  zIndexBase?: number;
 }
 
-export function DailyMeetPanel({ sessionId }: DailyMeetPanelProps) {
+export function DailyMeetPanel({ sessionId, zIndexBase = 1150 }: DailyMeetPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<any>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
   const [isVisible, setIsVisible] = useState(true);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [viewport, setViewport] = useState({ width: 1280, height: 720 });
   const [status, setStatus] = useState<"conectando" | "conectado" | "desconectado">("conectando");
   const [roomUrl, setRoomUrl] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
+
+  useEffect(() => {
+    const syncViewport = () => {
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    };
+    syncViewport();
+    window.addEventListener("resize", syncViewport);
+    return () => window.removeEventListener("resize", syncViewport);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -82,19 +94,62 @@ export function DailyMeetPanel({ sessionId }: DailyMeetPanelProps) {
     }
   }, [isMinimized, isVideoOff]);
 
+  const isLandscape = viewport.width > viewport.height;
+  const isMobile = viewport.width < 1024;
+
+  const panelSize = useMemo(() => {
+    if (!isMobile) {
+      return isMinimized ? { width: 288, height: 64 } : { width: 320, height: 420 };
+    }
+    const margin = 16;
+    const maxWidth = Math.max(220, viewport.width - margin * 2);
+    const width = isMinimized ? Math.min(280, maxWidth) : Math.max(220, Math.min(maxWidth, viewport.width * (isLandscape ? 0.3 : 0.9)));
+    const targetHeightRatio = isLandscape ? 0.3 : 0.25;
+    const expandedHeight = Math.max(160, Math.min(viewport.height * targetHeightRatio, viewport.height - margin * 2));
+    return {
+      width,
+      height: isMinimized ? 56 : expandedHeight,
+    };
+  }, [isLandscape, isMinimized, isMobile, viewport.height, viewport.width]);
+
+  const panelPositionStyle = useMemo(() => {
+    if (isMobile) {
+      return { top: 16, right: 16 };
+    }
+    return { bottom: 20, right: 20 };
+  }, [isMobile]);
+
   return (
     <>
       {!isVisible && (
         <button
           onClick={() => setIsVisible(true)}
-          className="fixed bottom-20 right-5 h-12 w-12 rounded-full flex items-center justify-center shadow-lg z-[90] bg-primary text-primary-foreground hover:scale-110 transition-all"
+          className="fixed h-12 w-12 rounded-full flex items-center justify-center shadow-lg bg-primary text-primary-foreground hover:scale-110 transition-all"
+          style={{ ...panelPositionStyle, zIndex: zIndexBase }}
           title="Abrir chamada de vídeo"
         >
           <Video className="w-5 h-5" />
         </button>
       )}
-      <div className={`fixed bottom-5 right-5 ${isVisible ? "" : "opacity-0 pointer-events-none"} ${isMinimized ? "w-72 h-16" : "w-80 h-[420px]"} bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl z-[100] flex flex-col overflow-hidden animate-in slide-in-from-bottom-5`}>
-      <div className="p-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50 backdrop-blur">
+      <div
+        className={`fixed ${isVisible ? "" : "opacity-0 pointer-events-none"} bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-5`}
+        style={{ ...panelPositionStyle, width: panelSize.width, height: panelSize.height, zIndex: zIndexBase }}
+      >
+      <div
+        className="p-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50 backdrop-blur"
+        onTouchStart={(event) => {
+          touchStartYRef.current = event.touches[0]?.clientY ?? null;
+        }}
+        onTouchEnd={(event) => {
+          const startY = touchStartYRef.current;
+          const endY = event.changedTouches[0]?.clientY ?? null;
+          touchStartYRef.current = null;
+          if (startY === null || endY === null) return;
+          const delta = endY - startY;
+          if (delta > 35) setIsMinimized(true);
+          if (delta < -35) setIsMinimized(false);
+        }}
+      >
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Daily</span>
           <span className={`text-[10px] px-2 py-0.5 rounded-full ${
