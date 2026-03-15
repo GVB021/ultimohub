@@ -5,12 +5,16 @@ import { getHighestStudioRole, normalizePlatformRole, normalizeStudioRole, hasMi
 test("normalizePlatformRole handles aliases", () => {
   assert.equal(normalizePlatformRole("platformowner"), "platform_owner");
   assert.equal(normalizePlatformRole("platform_owner"), "platform_owner");
+  assert.equal(normalizePlatformRole("master"), "platform_owner");
+  assert.equal(normalizePlatformRole("admin"), "platform_owner");
   assert.equal(normalizePlatformRole("user"), "user");
   assert.equal(normalizePlatformRole(undefined), "user");
 });
 
 test("normalizeStudioRole handles aliases", () => {
   assert.equal(normalizeStudioRole("adminstudio"), "studio_admin");
+  assert.equal(normalizeStudioRole("admin"), "studio_admin");
+  assert.equal(normalizeStudioRole("master"), "studio_admin");
   assert.equal(normalizeStudioRole("engenheriodeaudio"), "engenheiro_audio");
   assert.equal(normalizeStudioRole("director"), "diretor");
   assert.equal(normalizeStudioRole("voice_actor"), "dublador");

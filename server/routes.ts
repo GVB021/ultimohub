@@ -225,9 +225,6 @@ function isMasterEmail(email: string | null | undefined) {
   return String(email || "").trim().toLowerCase() === "borbaggabriel@gmail.com";
 }
 
-function isStudioManagementEmail(email: string | null | undefined) {
-  return String(email || "").trim().toLowerCase() === "borbaggabriel@gmail.com";
-}
 
 function sessionUserIdFromPayload(payload: any): string | null {
   const userId = payload?.passport?.user;
@@ -1850,11 +1847,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(200).json(enriched);
   });
 
-  app.get("/api/admin/studios/:id/management-settings", requireAuth, async (req, res) => {
-    const actor = (req as any).user;
-    if (!isStudioManagementEmail(actor?.email)) {
-      return res.status(403).json({ message: "Acesso negado" });
-    }
+  app.get("/api/admin/studios/:id/management-settings", requireAuth, requireAdmin, async (req, res) => {
     const studio = await storage.getStudio(req.params.id);
     if (!studio) {
       return res.status(404).json({ message: "Estudio nao encontrado" });
@@ -1882,11 +1875,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  app.put("/api/admin/studios/:id/management-settings", requireAuth, async (req, res) => {
-    const actor = (req as any).user;
-    if (!isStudioManagementEmail(actor?.email)) {
-      return res.status(403).json({ message: "Acesso negado" });
-    }
+  app.put("/api/admin/studios/:id/management-settings", requireAuth, requireAdmin, async (req, res) => {
     try {
       const payload = z.object({
         maxVoiceActors: z.number().int().positive(),

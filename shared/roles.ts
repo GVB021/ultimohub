@@ -23,6 +23,12 @@ export const STUDIO_ROLE_HIERARCHY: Record<StudioRole, number> = {
 const PLATFORM_ROLE_ALIASES: Record<string, PlatformRole> = {
   platformowner: "platform_owner",
   platform_owner: "platform_owner",
+  master: "platform_owner",
+  admin: "platform_owner",
+  administrador: "platform_owner",
+  administrator: "platform_owner",
+  super_admin: "platform_owner",
+  platform_admin: "platform_owner",
   owner: "platform_owner",
   user: "user",
 };
@@ -32,6 +38,10 @@ const STUDIO_ROLE_ALIASES: Record<string, StudioRole> = {
   platform_owner: "platform_owner",
   studio_admin: "studio_admin",
   adminstudio: "studio_admin",
+  admin: "studio_admin",
+  administrador: "studio_admin",
+  administrator: "studio_admin",
+  master: "studio_admin",
   diretor: "diretor",
   director: "diretor",
   teacher: "diretor",

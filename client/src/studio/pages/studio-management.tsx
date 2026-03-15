@@ -11,6 +11,12 @@ import { useToast } from "@studio/hooks/use-toast";
 
 const AUTHORIZED_EMAIL = "borbaggabriel@gmail.com";
 
+function hasManagementAccess(user: any) {
+  const normalizedEmail = String(user?.email || "").trim().toLowerCase();
+  const normalizedRole = String(user?.role || "").trim().toLowerCase().replace(/\s+/g, "_");
+  return normalizedEmail === AUTHORIZED_EMAIL || normalizedRole === "platform_owner" || normalizedRole === "master" || normalizedRole === "admin";
+}
+
 type ManagementSettings = {
   maxVoiceActors: number;
   maxDirectors: number;
@@ -37,13 +43,12 @@ export default function StudioManagementPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { user } = useAuth();
-  const normalizedEmail = String(user?.email || "").trim().toLowerCase();
-  const canAccess = normalizedEmail === AUTHORIZED_EMAIL;
+  const canAccess = hasManagementAccess(user);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [errors, setErrors] = useState<Partial<Record<keyof ManagementSettings, string>>>({});
   const [feedback, setFeedback] = useState("");
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["/api/admin/studios", studioId, "management-settings"],
     queryFn: () => authFetch(`/api/admin/studios/${studioId}/management-settings`) as Promise<{ studio: { id: string; name: string }; settings: ManagementSettings }>,
     enabled: canAccess && Boolean(studioId),
@@ -114,6 +119,10 @@ export default function StudioManagementPage() {
 
   const handleSave = () => {
     if (!validateForm()) return;
+    if (!studioId) {
+      toast({ title: "Estúdio inválido", variant: "destructive" });
+      return;
+    }
     const payload: ManagementSettings = {
       maxVoiceActors: Number(form.maxVoiceActors),
       maxDirectors: Number(form.maxDirectors),
@@ -133,6 +142,20 @@ export default function StudioManagementPage() {
           <h1 className="text-2xl font-bold">Acesso Negado</h1>
           <p className="text-sm text-muted-foreground mt-2">Você não possui permissão para acessar esta página.</p>
           <Button className="mt-6" variant="outline" onClick={() => setLocation("/hub-dub/admin")} data-testid="button-management-back-denied">
+            Voltar
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!studioId) {
+    return (
+      <div className="min-h-screen w-full bg-background text-foreground p-4 md:p-8">
+        <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-card p-8 md:p-10 text-center">
+          <h1 className="text-2xl font-bold">Estúdio não encontrado</h1>
+          <p className="text-sm text-muted-foreground mt-2">Não foi possível identificar o estúdio para gerenciamento.</p>
+          <Button className="mt-6" variant="outline" onClick={() => setLocation("/hub-dub/admin")} data-testid="button-management-back-missing-studio">
             Voltar
           </Button>
         </div>
@@ -160,6 +183,11 @@ export default function StudioManagementPage() {
             <p className="text-sm text-muted-foreground mt-1">
               {isLoading ? "Carregando configurações..." : `Estúdio: ${data?.studio?.name || "—"}`}
             </p>
+            {isError && (
+              <p className="text-sm text-destructive mt-2" data-testid="text-management-load-error">
+                {(error as any)?.message || "Falha ao carregar configurações de gestão"}
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">

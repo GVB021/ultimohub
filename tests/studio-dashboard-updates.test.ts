@@ -90,6 +90,7 @@ test("transição de páginas aplica blur progressivo e fade com espera", () => 
   assert.equal(app.includes("animate={{ opacity: 1, filter: \"blur(0px)\" }}"), true);
   assert.equal(app.includes("exit={{ opacity: 0, filter: \"blur(3px)\" }}"), true);
   assert.equal(app.includes("duration: 0.4"), true);
+  assert.equal(app.includes("component={StudioManagementPage} params={params}"), true);
 });
 
 test("servidor entrega index.html para rotas SPA sem capturar API", () => {

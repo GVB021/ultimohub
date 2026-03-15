@@ -132,7 +132,7 @@ function Router() {
             <Route path="/hub-dub/studios" component={StudioSelectRoute} />
 
             <Route path="/hub-dub/admin/studios/:studioId/management">
-              {() => <ProtectedRoute component={StudioManagementPage} />}
+              {params => <ProtectedRoute component={StudioManagementPage} params={params} />}
             </Route>
 
             <Route path="/hub-dub/admin">

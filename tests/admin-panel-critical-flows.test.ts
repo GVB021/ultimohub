@@ -27,11 +27,10 @@ test("backend protege super administrador contra remocao de privilegio", () => {
   assert.match(routes, /Somente o master admin pode conceder platform_owner/);
 });
 
-test("backend cobre página dedicada de gestão com acesso exclusivo por email", () => {
+test("backend cobre página dedicada de gestão com autorização administrativa", () => {
   const routes = readFileSync(routesPath, "utf8");
-  assert.match(routes, /isStudioManagementEmail/);
   assert.match(routes, /\/api\/admin\/studios\/:id\/management-settings/);
-  assert.match(routes, /Acesso negado/);
+  assert.match(routes, /requireAdmin/);
   assert.match(routes, /UPDATE_STUDIO_MANAGEMENT_SETTINGS/);
   assert.match(routes, /z\.number\(\)\.int\(\)\.positive\(\)/);
 });
@@ -53,10 +52,13 @@ test("frontend admin redireciona gestão de estúdio para página dedicada", () 
   assert.doesNotMatch(admin, /button-study-unallocate/);
 });
 
-test("página de gestão valida campos positivos e bloqueia usuários não autorizados", () => {
+test("página de gestão valida campos positivos e trata falhas de acesso/carregamento", () => {
   const managementPage = readFileSync(managementPagePath, "utf8");
   assert.match(managementPage, /AUTHORIZED_EMAIL = "borbaggabriel@gmail.com"/);
+  assert.match(managementPage, /hasManagementAccess/);
   assert.match(managementPage, /Acesso Negado/);
+  assert.match(managementPage, /Estúdio não encontrado/);
+  assert.match(managementPage, /text-management-load-error/);
   assert.match(managementPage, /Campo obrigatório/);
   assert.match(managementPage, /Use um número inteiro positivo/);
   assert.match(managementPage, /min=\{1\}/);
