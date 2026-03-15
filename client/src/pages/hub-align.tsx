@@ -1,10 +1,21 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pause, Play, Upload } from "lucide-react";
+import { Loader2, Pause, Play, Upload, ChevronRight, FileAudio, Check, Download } from "lucide-react";
 import { AppHeader } from "@/components/nav/AppHeader";
 import { authFetch } from "@/lib/auth-fetch";
 import { useAuth } from "@/hooks/use-auth";
+
+// Hook para detectar mobile
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+  return isMobile;
+}
 
 type HubAlignAccess = {
   allowed: boolean;
@@ -46,6 +57,7 @@ function formatSize(input: number) {
 }
 
 export default function HubAlignPage() {
+  const isMobile = useIsMobile();
   const [lang, setLang] = useState<"en" | "pt">("pt");
   const [, navigate] = useLocation();
   const { user, isLoading } = useAuth();
@@ -57,6 +69,8 @@ export default function HubAlignPage() {
   const [selectedPreview, setSelectedPreview] = useState<string>("");
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const [hubDubSearch, setHubDubSearch] = useState("");
+  const [isGeneratingTrack, setIsGeneratingTrack] = useState(false);
+  const [trackReady, setTrackReady] = useState(false);
 
   const accessQuery = useQuery<HubAlignAccess>({
     queryKey: ["/api/hubalign/access"],
@@ -210,6 +224,147 @@ export default function HubAlignPage() {
             <h1 className="text-2xl font-semibold mb-2">Acesso não autorizado</h1>
             <p className="text-muted-foreground">A área HubAlign está liberada exclusivamente para o usuário borbaggabriel.</p>
           </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex flex-col">
+        <AppHeader lang={lang} setLang={setLang} />
+        <main className="flex-1 pt-20 px-4 pb-10 space-y-6">
+          <section className="space-y-4">
+            <h1 className="text-xl font-bold">HubAlign Mobile</h1>
+            <div className="rounded-2xl bg-card border border-border p-4 shadow-sm">
+              <h2 className="text-sm font-semibold mb-3">Selecione o Projeto</h2>
+              <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
+                {(projectsQuery.data?.items || []).map((project) => (
+                  <button
+                    key={project.id}
+                    onClick={() => {
+                      setSelectedProjectId(project.id);
+                      setTrackReady(false);
+                    }}
+                    className={`flex-shrink-0 px-4 py-2 rounded-xl border text-sm transition-all ${
+                      selectedProjectId === project.id ? "bg-primary text-primary-foreground border-primary" : "bg-muted/50 border-border"
+                    }`}
+                  >
+                    {project.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {selectedProjectId && (
+            <section className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold">Seleção de Takes</h2>
+                <span className="text-[10px] text-muted-foreground uppercase font-bold">{selectedFileUrls.length} selecionados</span>
+              </div>
+              <div className="grid gap-3">
+                {(hubDubTakesQuery.data?.items || []).map((take) => {
+                  const isSelected = selectedFileUrls.includes(take.streamUrl);
+                  return (
+                    <button
+                      key={take.id}
+                      onClick={() => {
+                        const next = isSelected
+                          ? selectedFileUrls.filter((url) => url !== take.streamUrl)
+                          : [...selectedFileUrls, take.streamUrl];
+                        setSelectedFileUrls(next);
+                        setTrackReady(false);
+                      }}
+                      className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left min-h-[56px] ${
+                        isSelected ? "bg-primary/5 border-primary/30" : "bg-card border-border"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`w-5 h-5 rounded-full border flex items-center justify-center transition-colors ${
+                          isSelected ? "bg-primary border-primary text-primary-foreground" : "bg-muted/50 border-border"
+                        }`}>
+                          {isSelected && <Check className="w-3 h-3" />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold truncate max-w-[200px]">{take.characterName || "Sem personagem"}</p>
+                          <p className="text-[10px] text-muted-foreground uppercase">{take.productionName}</p>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-muted-foreground">{take.durationSeconds.toFixed(1)}s</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-md border-t border-border/50 z-50">
+                {!trackReady ? (
+                  <button
+                    disabled={selectedFileUrls.length === 0 || isGeneratingTrack}
+                    onClick={() => {
+                      setIsGeneratingTrack(true);
+                      setTimeout(() => {
+                        setIsGeneratingTrack(false);
+                        setTrackReady(true);
+                        if (selectedFileUrls[0]) setSelectedPreview(selectedFileUrls[0]);
+                      }, 2000);
+                    }}
+                    className="vhub-btn-lg w-full bg-primary text-primary-foreground flex items-center justify-center gap-2 rounded-2xl"
+                  >
+                    {isGeneratingTrack ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Processando...
+                      </>
+                    ) : (
+                      <>
+                        <FileAudio className="w-4 h-4" />
+                        Gerar Track
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
+                      <button
+                        className="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center"
+                        onClick={() => {
+                          const audio = document.getElementById("hubalign-audio-mobile") as HTMLAudioElement;
+                          if (audio.paused) {
+                            audio.play();
+                            setIsPreviewPlaying(true);
+                          } else {
+                            audio.pause();
+                            setIsPreviewPlaying(false);
+                          }
+                        }}
+                      >
+                        {isPreviewPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      </button>
+                      <div className="flex-1 overflow-hidden">
+                        <p className="text-xs font-bold truncate">Track Gerada • {selectedFileUrls.length} takes</p>
+                        <audio id="hubalign-audio-mobile" src={selectedPreview} className="hidden" onPlay={() => setIsPreviewPlaying(true)} onPause={() => setIsPreviewPlaying(false)} />
+                      </div>
+                      <button 
+                        className="w-10 h-10 rounded-full bg-muted flex items-center justify-center"
+                        onClick={() => {
+                          const link = document.createElement("a");
+                          link.href = selectedPreview;
+                          link.download = "track-final.wav";
+                          link.click();
+                        }}
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <button onClick={() => setTrackReady(false)} className="w-full text-xs text-muted-foreground font-bold uppercase tracking-widest py-2">
+                      Recomeçar
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
         </main>
       </div>
     );
