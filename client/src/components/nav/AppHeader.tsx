@@ -31,10 +31,12 @@ export function AppHeader({
   const { user, isLoading } = useAuth();
   const [, navigate] = useLocation();
   const t = { ...defaultLandingHeaderTextConfig, ...(textConfig || {}) };
+  const username = String(user?.email || "").trim().toLowerCase().split("@")[0] || "";
+  const canAccessHubAlign = username === "borbaggabriel";
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-transparent">
-      <div className="max-w-[1400px] mx-auto px-6 h-[60px] flex items-center justify-between">
+      <div className="max-w-[1400px] mx-auto px-6 h-[60px] flex items-center justify-between relative">
         <div className="flex items-center gap-2">
           <Link href="/">
             <div className="flex items-center gap-2 cursor-pointer group">
@@ -48,8 +50,20 @@ export function AppHeader({
           </Link>
         </div>
 
-        <nav className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-[0.24em] text-muted-foreground uppercase">
-        </nav>
+        <nav className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-[0.24em] text-muted-foreground uppercase" />
+
+        {!isLoading && canAccessHubAlign && (
+          <div className="absolute left-1/2 -translate-x-1/2">
+            <Button
+              type="button"
+              className="rounded-full px-5 h-9 text-xs font-semibold"
+              onClick={() => navigate("/hub-align")}
+              data-testid="button-exclusive-hubalign"
+            >
+              HubAlign
+            </Button>
+          </div>
+        )}
 
         <div className="flex items-center gap-3">
           <LanguageThemePill lang={lang} setLang={setLang} />

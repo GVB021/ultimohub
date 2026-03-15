@@ -210,6 +210,58 @@ export async function uploadToSupabaseStorage(params: {
   return publicUrl;
 }
 
+export async function uploadJsonToSupabaseStorage(params: {
+  bucket: string;
+  path: string;
+  data: unknown;
+}) {
+  const body = Buffer.from(JSON.stringify(params.data ?? {}), "utf8");
+  return uploadToSupabaseStorage({
+    bucket: params.bucket,
+    path: params.path,
+    buffer: body,
+    contentType: "application/json; charset=utf-8",
+  });
+}
+
+export async function listSupabaseStorageObjects(params: {
+  bucket: string;
+  prefix?: string;
+  limit?: number;
+  offset?: number;
+  sortBy?: { column: "name" | "updated_at" | "created_at" | "last_accessed_at"; order: "asc" | "desc" };
+}) {
+  requireSupabase();
+  const bucket = String(params.bucket || "").trim();
+  if (!bucket) throw new Error("Supabase bucket is required");
+
+  const baseUrl = getSupabaseBaseUrl();
+  const url = `${baseUrl}/storage/v1/object/list/${encodeURIComponent(bucket)}`;
+  const payload = {
+    prefix: String(params.prefix || "").replace(/^\/+/, ""),
+    limit: Math.max(1, Math.min(500, Number(params.limit || 100))),
+    offset: Math.max(0, Number(params.offset || 0)),
+    sortBy: params.sortBy || { column: "name", order: "asc" },
+  };
+
+  const res = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers: supabaseHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(payload),
+    },
+    { op: "storage.object.list", attemptHint: `${bucket}/${payload.prefix}` },
+    { retries: 2, baseDelayMs: 250 },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Supabase list failed: HTTP ${res.status} ${text}`.trim());
+  }
+  const out = await res.json().catch(() => []);
+  return Array.isArray(out) ? out : [];
+}
+
 export function parseSupabaseStorageUrl(input: string): { bucket: string; path: string } | null {
   const raw = String(input || "").trim();
   if (!raw) return null;

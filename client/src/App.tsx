@@ -35,6 +35,7 @@ const lazyWithRetry = <T extends ComponentType<any>>(importer: () => Promise<{ d
 
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
 const Landing = lazyWithRetry(() => import("@/components/presentation/PresentationLanding"));
+const HubAlign = lazyWithRetry(() => import("@/pages/hub-align"));
 // Studio Pages (imported from the HUBDUB-STUDIO folder)
 const Login = lazyWithRetry(() => import("@studio/pages/login"));
 const StudioSelect = lazyWithRetry(() => import("@studio/pages/studio-select"));
@@ -106,6 +107,17 @@ function Router() {
               className="w-full min-h-screen bg-background"
             >
               <Landing />
+            </motion.div>
+          </Route>
+
+          <Route path="/hub-align">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="w-full min-h-screen bg-background"
+            >
+              <HubAlign />
             </motion.div>
           </Route>
 

@@ -1,201 +1,420 @@
-import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useMemo, useState } from "react";
-import { MeshGradient } from "@/components/landing/MeshGradient";
-import { AppHeader, defaultLandingHeaderTextConfig, type LandingHeaderTextConfig } from "@/components/nav/AppHeader";
+import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Pause, Play, Upload } from "lucide-react";
+import { AppHeader } from "@/components/nav/AppHeader";
+import { authFetch } from "@/lib/auth-fetch";
 import { useAuth } from "@/hooks/use-auth";
-import { canEditLandingTextByEmail } from "@/lib/landing-editor-access";
 
-type LandingTextConfig = LandingHeaderTextConfig & { phrasesPt: string[]; phrasesEn: string[] };
-
-const LANDING_TEXT_STORAGE_KEY = "vhub_landing_text_config_v1";
-
-const defaultLandingTextConfig: LandingTextConfig = {
-  ...defaultLandingHeaderTextConfig,
-  phrasesPt: ["The Future of Dubb....", "O Futuro da Dublagem", "T H E H U B", "MENOS CLIQUES", "MAIS DUBLAGEM", "T H E H U B"],
-  phrasesEn: ["The Future of Dubb....", "O Futuro da Dublagem", "T H E H U B", "MENOS CLIQUES", "MAIS DUBLAGEM", "T H E H U B"],
+type HubAlignAccess = {
+  allowed: boolean;
+  username: string;
+  expected: string;
+  supabaseOk: boolean;
+  supabaseReason: string | null;
 };
 
-function cleanSingleLine(v: unknown, fallback: string, max = 42) {
-  const s = String(v ?? "").replace(/\s+/g, " ").trim();
-  return (s || fallback).slice(0, max);
+type HubAlignProject = {
+  id: string;
+  name: string;
+  description: string;
+  fileCount: number;
+  versionCount: number;
+};
+
+type HubAlignFile = {
+  name: string;
+  objectPath: string;
+  size: number;
+  updatedAt: string | null;
+  streamUrl: string;
+};
+
+type TrackRow = {
+  id: string;
+  fileName: string;
+  streamUrl: string;
+  startSeconds: number;
+  durationSeconds: number;
+};
+
+function formatSize(input: number) {
+  if (!Number.isFinite(input) || input <= 0) return "0 B";
+  if (input >= 1024 * 1024) return `${(input / (1024 * 1024)).toFixed(2)} MB`;
+  if (input >= 1024) return `${(input / 1024).toFixed(1)} KB`;
+  return `${Math.round(input)} B`;
 }
 
-function cleanPhraseList(input: unknown, fallback: string[]) {
-  const list = Array.isArray(input) ? input : String(input ?? "").split("\n");
-  const out = list.map((v) => cleanSingleLine(v, "", 84)).filter(Boolean).slice(0, 8);
-  return out.length ? out : fallback;
-}
+export default function HubAlignPage() {
+  const [lang, setLang] = useState<"en" | "pt">("pt");
+  const [, navigate] = useLocation();
+  const { user, isLoading } = useAuth();
+  const queryClient = useQueryClient();
+  const [projectName, setProjectName] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedFileUrls, setSelectedFileUrls] = useState<string[]>([]);
+  const [selectedPreview, setSelectedPreview] = useState<string>("");
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
+  const [hubDubSearch, setHubDubSearch] = useState("");
 
-function normalizeLandingTextConfig(input: unknown): LandingTextConfig {
-  const obj = typeof input === "object" && input ? (input as Record<string, unknown>) : {};
-  return {
-    brandAlt: cleanSingleLine(obj.brandAlt, defaultLandingTextConfig.brandAlt, 32),
-    brandName: cleanSingleLine(obj.brandName, defaultLandingTextConfig.brandName, 24),
-    navHubDub: cleanSingleLine(obj.navHubDub, defaultLandingTextConfig.navHubDub, 16),
-    authEnter: cleanSingleLine(obj.authEnter, defaultLandingTextConfig.authEnter, 16),
-    authPanel: cleanSingleLine(obj.authPanel, defaultLandingTextConfig.authPanel, 16),
-    phrasesPt: cleanPhraseList(obj.phrasesPt, defaultLandingTextConfig.phrasesPt),
-    phrasesEn: cleanPhraseList(obj.phrasesEn, defaultLandingTextConfig.phrasesEn),
-  };
-}
+  const accessQuery = useQuery<HubAlignAccess>({
+    queryKey: ["/api/hubalign/access"],
+    queryFn: () => authFetch("/api/hubalign/access"),
+    enabled: Boolean(user),
+    retry: false,
+  });
 
-function loadLandingTextConfig() {
-  try { return normalizeLandingTextConfig(JSON.parse(localStorage.getItem(LANDING_TEXT_STORAGE_KEY) || "{}")); }
-  catch { return defaultLandingTextConfig; }
-}
+  const projectsQuery = useQuery<{ items: HubAlignProject[] }>({
+    queryKey: ["/api/hubalign/projects"],
+    queryFn: () => authFetch("/api/hubalign/projects"),
+    enabled: Boolean(accessQuery.data?.allowed),
+  });
 
-export default function PresentationLanding() {
-  const { user } = useAuth();
-  const [lang, setLang] = useState<"en" | "pt">("en");
-  const [textConfig, setTextConfig] = useState<LandingTextConfig>(() => loadLandingTextConfig());
-  const [isEditorOpen, setIsEditorOpen] = useState(false);
-  const phrases = useMemo(() => (lang === "pt" ? textConfig.phrasesPt : textConfig.phrasesEn), [lang, textConfig.phrasesEn, textConfig.phrasesPt]);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [display, setDisplay] = useState("");
-  const [isDeleting, setIsDeleting] = useState(false);
-  const canEditLandingText = canEditLandingTextByEmail(user?.email);
+  const filesQuery = useQuery<{ items: HubAlignFile[] }>({
+    queryKey: ["/api/hubalign/projects", selectedProjectId, "files"],
+    queryFn: () => authFetch(`/api/hubalign/projects/${selectedProjectId}/files`),
+    enabled: Boolean(accessQuery.data?.allowed && selectedProjectId),
+  });
 
-  useEffect(() => {
-    localStorage.setItem(LANDING_TEXT_STORAGE_KEY, JSON.stringify(textConfig));
-  }, [textConfig]);
+  const hubDubTakesQuery = useQuery<{ items: any[] }>({
+    queryKey: ["/api/hubalign/hubdub-takes", hubDubSearch],
+    queryFn: () => authFetch(`/api/hubalign/hubdub-takes?search=${encodeURIComponent(hubDubSearch)}`),
+    enabled: Boolean(accessQuery.data?.allowed),
+  });
 
-  useEffect(() => {
-    if (!canEditLandingText) return;
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "e") {
-        e.preventDefault();
-        setIsEditorOpen((v) => !v);
-      }
+  const createProjectMutation = useMutation({
+    mutationFn: () =>
+      authFetch("/api/hubalign/projects", {
+        method: "POST",
+        body: JSON.stringify({ name: projectName, description: projectDescription }),
+      }),
+    onSuccess: (created: HubAlignProject) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/hubalign/projects"] });
+      setSelectedProjectId(created.id);
+      setProjectName("");
+      setProjectDescription("");
+    },
+  });
+
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`/api/hubalign/projects/${selectedProjectId}/upload`, {
+        method: "POST",
+        body: form,
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message || "Falha no upload");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/hubalign/projects", selectedProjectId, "files"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/hubalign/projects"] });
+    },
+  });
+
+  const tracks = useMemo<TrackRow[]>(() => {
+    const files = filesQuery.data?.items || [];
+    let start = 0;
+    return files
+      .filter((f) => selectedFileUrls.includes(f.streamUrl))
+      .map((file) => {
+        const row = {
+          id: `${file.objectPath}`,
+          fileName: file.name,
+          streamUrl: file.streamUrl,
+          startSeconds: start,
+          durationSeconds: 3,
+        };
+        start += row.durationSeconds;
+        return row;
+      });
+  }, [filesQuery.data?.items, selectedFileUrls]);
+
+  const saveVersionMutation = useMutation({
+    mutationFn: () =>
+      authFetch(`/api/hubalign/projects/${selectedProjectId}/tracks/version`, {
+        method: "POST",
+        body: JSON.stringify({
+          tracks,
+          playback: { previewFile: selectedPreview || null },
+          note: "Versionamento manual via interface HubAlign",
+        }),
+      }),
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: () =>
+      authFetch(`/api/hubalign/projects/${selectedProjectId}/export`, {
+        method: "POST",
+        body: JSON.stringify({
+          selectedFiles: tracks.map((t) => t.fileName),
+          timeline: tracks,
+        }),
+      }),
+  });
+
+  const dashboardMetrics = useMemo(() => {
+    const projects = projectsQuery.data?.items || [];
+    const files = filesQuery.data?.items || [];
+    return {
+      totalProjects: projects.length,
+      totalFiles: files.length,
+      selectedTracks: tracks.length,
+      avgFileSize: files.length ? Math.round(files.reduce((acc, item) => acc + Number(item.size || 0), 0) / files.length) : 0,
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [canEditLandingText]);
+  }, [filesQuery.data?.items, projectsQuery.data?.items, tracks.length]);
 
-  useEffect(() => {
-    if (!canEditLandingText) setIsEditorOpen(false);
-  }, [canEditLandingText]);
-
-  const longPhrases = phrases.filter((p) => p.length > 42);
-
-  return (
-    <div className="min-h-screen bg-background text-foreground font-sans overflow-hidden">
-      <AppHeader lang={lang} setLang={setLang} textConfig={textConfig} />
-
-      <div className="absolute inset-0 z-0 pointer-events-none">
-        <div className="opacity-35">
-          <MeshGradient />
-        </div>
-        <div className="absolute inset-0 bg-white/60 backdrop-blur-[2px]" />
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
+    );
+  }
 
-      <main className="relative z-10 min-h-screen flex items-center justify-center px-6 pt-[60px]">
-        <div className="w-full max-w-5xl text-center">
-          <div className="text-5xl md:text-7xl lg:text-8xl font-semibold tracking-tight leading-[1.05]">
-            <TypeCycle
-              phrases={phrases}
-              activeIndex={activeIndex}
-              setActiveIndex={setActiveIndex}
-              display={display}
-              setDisplay={setDisplay}
-              isDeleting={isDeleting}
-              setIsDeleting={setIsDeleting}
-            />
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <AppHeader lang={lang} setLang={setLang} />
+        <main className="pt-28 max-w-4xl mx-auto px-6">
+          <div className="rounded-2xl border border-border p-8 bg-card">
+            <h1 className="text-2xl font-semibold mb-2">HubAlign - Acesso restrito</h1>
+            <p className="text-muted-foreground mb-6">Faça login para acessar o ambiente de montagem e sincronização.</p>
+            <button className="h-10 px-5 rounded-md bg-primary text-primary-foreground font-semibold" onClick={() => navigate("/hub-dub/login")}>
+              Ir para login
+            </button>
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
+    );
+  }
 
-      {canEditLandingText && (
-        <button
-          type="button"
-          onClick={() => setIsEditorOpen((v) => !v)}
-          className="fixed right-4 bottom-4 z-30 rounded-full border border-border bg-background/90 backdrop-blur px-4 h-9 text-xs font-semibold"
-          data-testid="button-landing-text-editor"
-        >
-          Editar textos
-        </button>
-      )}
+  if (accessQuery.isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
-      {canEditLandingText && isEditorOpen && (
-        <div className="fixed right-4 bottom-16 z-30 w-[min(92vw,460px)] rounded-2xl border border-border bg-background/95 backdrop-blur p-4 shadow-2xl space-y-3">
-          <input className="w-full rounded-md border border-border bg-background px-3 h-9 text-sm" value={textConfig.brandName} onChange={(e) => setTextConfig((c) => ({ ...c, brandName: cleanSingleLine(e.target.value, c.brandName, 24) }))} placeholder="Marca" />
-          <input className="w-full rounded-md border border-border bg-background px-3 h-9 text-sm" value={textConfig.navHubDub} onChange={(e) => setTextConfig((c) => ({ ...c, navHubDub: cleanSingleLine(e.target.value, c.navHubDub, 16) }))} placeholder="HUBDUB" />
-          <textarea
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm min-h-28"
-            value={(lang === "pt" ? textConfig.phrasesPt : textConfig.phrasesEn).join("\n")}
-            onChange={(e) => setTextConfig((c) => (lang === "pt" ? { ...c, phrasesPt: cleanPhraseList(e.target.value, c.phrasesPt) } : { ...c, phrasesEn: cleanPhraseList(e.target.value, c.phrasesEn) }))}
-          />
-          {longPhrases.length > 0 && <p className="text-xs text-amber-500">Algumas frases podem quebrar em telas menores. Mantenha até ~42 caracteres.</p>}
-          <div className="flex justify-between gap-2">
-            <button type="button" className="rounded-md border border-border px-3 h-9 text-xs" onClick={() => setTextConfig(defaultLandingTextConfig)}>Resetar</button>
-            <button type="button" className="rounded-md border border-border px-3 h-9 text-xs" onClick={() => setIsEditorOpen(false)}>Fechar</button>
+  if (!accessQuery.data?.allowed) {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <AppHeader lang={lang} setLang={setLang} />
+        <main className="pt-28 max-w-4xl mx-auto px-6">
+          <div className="rounded-2xl border border-border p-8 bg-card">
+            <h1 className="text-2xl font-semibold mb-2">Acesso não autorizado</h1>
+            <p className="text-muted-foreground">A área HubAlign está liberada exclusivamente para o usuário borbaggabriel.</p>
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-function TypeCycle({
-  phrases,
-  activeIndex,
-  setActiveIndex,
-  display,
-  setDisplay,
-  isDeleting,
-  setIsDeleting,
-}: {
-  phrases: string[];
-  activeIndex: number;
-  setActiveIndex: (v: number) => void;
-  display: string;
-  setDisplay: (v: string) => void;
-  isDeleting: boolean;
-  setIsDeleting: (v: boolean) => void;
-}) {
-  useEffect(() => {
-    const phrase = phrases[activeIndex] || "";
-    const holdMs = 1200;
-    const typeMs = 38;
-    const deleteMs = 22;
-
-    const timeout = window.setTimeout(() => {
-      if (!isDeleting) {
-        const next = phrase.slice(0, display.length + 1);
-        setDisplay(next);
-        if (next.length === phrase.length) {
-          window.setTimeout(() => setIsDeleting(true), holdMs);
-        }
-        return;
-      }
-
-      const next = phrase.slice(0, Math.max(0, display.length - 1));
-      setDisplay(next);
-      if (next.length === 0) {
-        setIsDeleting(false);
-        setActiveIndex((activeIndex + 1) % phrases.length);
-      }
-    }, isDeleting ? deleteMs : typeMs);
-
-    return () => window.clearTimeout(timeout);
-  }, [activeIndex, display.length, isDeleting, phrases, setActiveIndex, setDisplay, setIsDeleting]);
+        </main>
+      </div>
+    );
+  }
 
   return (
-    <div className="inline-flex items-end justify-center gap-2">
-      <span className="bg-clip-text text-transparent bg-gradient-to-b from-foreground to-foreground/55">
-        {display}
-      </span>
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.span
-          key={isDeleting ? "del" : "type"}
-          initial={{ opacity: 0.2 }}
-          animate={{ opacity: [0.2, 1, 0.2] }}
-          exit={{ opacity: 0.2 }}
-          transition={{ duration: 0.9, repeat: Infinity }}
-          className="text-foreground/60"
-          aria-hidden
-        >
-          |
-        </motion.span>
-      </AnimatePresence>
+    <div className="min-h-screen bg-background text-foreground">
+      <AppHeader lang={lang} setLang={setLang} />
+      <main className="pt-24 pb-16 max-w-[1400px] mx-auto px-6 space-y-6">
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <p className="text-xs text-muted-foreground uppercase">Projetos</p>
+            <p className="text-2xl font-bold">{dashboardMetrics.totalProjects}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-4">
+            <p className="text-xs text-muted-foreground uppercase">Arquivos</p>
+            <p className="text-2xl font-bold">{dashboardMetrics.totalFiles}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-4">
+            <p className="text-xs text-muted-foreground uppercase">Tracks selecionadas</p>
+            <p className="text-2xl font-bold">{dashboardMetrics.selectedTracks}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-4">
+            <p className="text-xs text-muted-foreground uppercase">Média por arquivo</p>
+            <p className="text-2xl font-bold">{formatSize(dashboardMetrics.avgFileSize)}</p>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <h2 className="text-lg font-semibold">Projetos HubAlign</h2>
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3">
+            <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Nome do projeto" className="h-10 rounded-md border border-border px-3 bg-background" />
+            <input value={projectDescription} onChange={(e) => setProjectDescription(e.target.value)} placeholder="Descrição técnica" className="h-10 rounded-md border border-border px-3 bg-background" />
+            <button
+              className="h-10 px-4 rounded-md bg-primary text-primary-foreground font-semibold disabled:opacity-50"
+              onClick={() => createProjectMutation.mutate()}
+              disabled={createProjectMutation.isPending}
+            >
+              {createProjectMutation.isPending ? "Criando..." : "Criar projeto"}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {(projectsQuery.data?.items || []).map((project) => (
+              <button
+                key={project.id}
+                className={`text-left rounded-lg border p-4 ${selectedProjectId === project.id ? "border-primary" : "border-border"}`}
+                onClick={() => setSelectedProjectId(project.id)}
+              >
+                <p className="font-semibold">{project.name}</p>
+                <p className="text-sm text-muted-foreground">{project.description || "Sem descrição"}</p>
+                <p className="text-xs text-muted-foreground mt-2">{project.fileCount} arquivos • {project.versionCount} versões</p>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Upload e gerenciamento de dublagens</h2>
+            <label className="h-10 px-4 rounded-md border border-border inline-flex items-center gap-2 cursor-pointer">
+              <Upload className="w-4 h-4" />
+              Upload
+              <input
+                type="file"
+                accept="audio/*"
+                className="hidden"
+                disabled={!selectedProjectId || uploadMutation.isPending}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file && selectedProjectId) uploadMutation.mutate(file);
+                }}
+              />
+            </label>
+          </div>
+          <div className="space-y-2">
+            {(filesQuery.data?.items || []).map((file) => {
+              const checked = selectedFileUrls.includes(file.streamUrl);
+              return (
+                <div key={file.objectPath} className="rounded-lg border border-border p-3 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...selectedFileUrls, file.streamUrl]
+                          : selectedFileUrls.filter((url) => url !== file.streamUrl);
+                        setSelectedFileUrls(next);
+                      }}
+                    />
+                    <div>
+                      <p className="font-medium">{file.name}</p>
+                      <p className="text-xs text-muted-foreground">{formatSize(file.size)}</p>
+                    </div>
+                  </div>
+                  <button className="h-8 px-3 rounded-md border border-border text-sm" onClick={() => setSelectedPreview(file.streamUrl)}>
+                    Prévia
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Takes dublados do HubDub</h2>
+            <div className="flex items-center gap-2">
+              <input 
+                value={hubDubSearch} 
+                onChange={(e) => setHubDubSearch(e.target.value)} 
+                placeholder="Buscar produção, ator..." 
+                className="h-9 w-64 rounded-md border border-border px-3 bg-background text-sm" 
+              />
+            </div>
+          </div>
+          <div className="max-h-[400px] overflow-y-auto space-y-2 pr-2">
+            {hubDubTakesQuery.isLoading && <div className="flex items-center justify-center p-8"><Loader2 className="w-6 h-6 animate-spin" /></div>}
+            {(hubDubTakesQuery.data?.items || []).map((take) => {
+              const checked = selectedFileUrls.includes(take.streamUrl);
+              return (
+                <div key={take.id} className="rounded-lg border border-border p-3 flex items-center justify-between gap-4 bg-background/50 hover:bg-muted/30 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...selectedFileUrls, take.streamUrl]
+                          : selectedFileUrls.filter((url) => url !== take.streamUrl);
+                        setSelectedFileUrls(next);
+                      }}
+                    />
+                    <div>
+                      <p className="font-medium text-sm">{take.characterName || "Sem personagem"} - {take.productionName}</p>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{take.voiceActorName} • {take.sessionTitle} • {take.durationSeconds.toFixed(1)}s</p>
+                    </div>
+                  </div>
+                  <button className="h-8 px-3 rounded-md border border-border text-sm hover:bg-background transition-colors" onClick={() => setSelectedPreview(take.streamUrl)}>
+                    Prévia
+                  </button>
+                </div>
+              );
+            })}
+            {!hubDubTakesQuery.isLoading && (hubDubTakesQuery.data?.items || []).length === 0 && (
+              <p className="text-center py-8 text-sm text-muted-foreground">Nenhum take dublado encontrado.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <h2 className="text-lg font-semibold">Montagem de tracks e timeline</h2>
+          <div className="space-y-2">
+            {tracks.map((track) => (
+              <div key={track.id} className="grid grid-cols-[1fr_140px_140px] gap-3 rounded-md border border-border p-3">
+                <div className="font-medium">{track.fileName}</div>
+                <div className="text-sm text-muted-foreground">Start: {track.startSeconds.toFixed(2)}s</div>
+                <div className="text-sm text-muted-foreground">Duração: {track.durationSeconds.toFixed(2)}s</div>
+              </div>
+            ))}
+            {tracks.length === 0 && <p className="text-sm text-muted-foreground">Selecione arquivos para montar a timeline.</p>}
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              className="h-10 px-4 rounded-md border border-border disabled:opacity-50"
+              disabled={!selectedProjectId || tracks.length === 0 || saveVersionMutation.isPending}
+              onClick={() => saveVersionMutation.mutate()}
+            >
+              {saveVersionMutation.isPending ? "Salvando versão..." : "Salvar versão"}
+            </button>
+            <button
+              className="h-10 px-4 rounded-md bg-primary text-primary-foreground font-semibold disabled:opacity-50"
+              disabled={!selectedProjectId || tracks.length === 0 || exportMutation.isPending}
+              onClick={() => exportMutation.mutate()}
+            >
+              {exportMutation.isPending ? "Exportando..." : "Exportar projeto"}
+            </button>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card p-5 space-y-4">
+          <h2 className="text-lg font-semibold">Playback de pré-visualização</h2>
+          <div className="flex items-center gap-3">
+            <button
+              className="h-10 w-10 rounded-full border border-border inline-flex items-center justify-center disabled:opacity-50"
+              disabled={!selectedPreview}
+              onClick={() => {
+                const audio = document.getElementById("hubalign-audio-preview") as HTMLAudioElement | null;
+                if (!audio) return;
+                if (audio.paused) {
+                  audio.play().catch(() => {});
+                  setIsPreviewPlaying(true);
+                } else {
+                  audio.pause();
+                  setIsPreviewPlaying(false);
+                }
+              }}
+            >
+              {isPreviewPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+            </button>
+            <p className="text-sm text-muted-foreground truncate">{selectedPreview ? decodeURIComponent(selectedPreview) : "Selecione um arquivo para ouvir a prévia."}</p>
+          </div>
+          <audio id="hubalign-audio-preview" src={selectedPreview} controls className="w-full" onPause={() => setIsPreviewPlaying(false)} onPlay={() => setIsPreviewPlaying(true)} />
+        </section>
+      </main>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { setupVideoSync } from "./video-sync";
 import { setupRealtime, broadcastInvalidate } from "./realtime";
 import { registerMeRestore } from "./me-restore";
 import { registerVoiceJobs } from "./voice-jobs";
+import { registerHubAlignRoutes } from "./hubalign-routes";
 import { pool } from "./db";
 import { configureSupabase } from "./lib/supabase";
 import path from "path";
@@ -214,6 +215,7 @@ app.use((req, res, next) => {
 
     await setupAuth(app);
     registerAuthRoutes(app);
+    registerHubAlignRoutes(app);
     registerVoiceJobs(app);
     registerMeRestore(app);
     await registerRoutes(httpServer, app);
