@@ -11,8 +11,8 @@ const LANDING_TEXT_STORAGE_KEY = "vhub_landing_text_config_v1";
 
 const defaultLandingTextConfig: LandingTextConfig = {
   ...defaultLandingHeaderTextConfig,
-  phrasesPt: ["DUBLAGEM. DIREÇÃO. ENTREGA.", "GRAVE. ALINHE. ENTREGUE.", "ATALHOS. LOOP. PRECISÃO.", "MENOS CLIQUES. MAIS TAKES."],
-  phrasesEn: ["DUBBING. DIRECTION. DELIVERY.", "RECORD. ALIGN. DELIVER.", "SHORTCUTS. LOOP. PRECISION.", "LESS CLICKS. MORE TAKES."],
+  phrasesPt: ["The Future of Dubb....", "O Futuro da Dublagem", "T H E H U B", "MENOS CLIQUES", "MAIS DUBLAGEM", "T H E H U B"],
+  phrasesEn: ["The Future of Dubb....", "O Futuro da Dublagem", "T H E H U B", "MENOS CLIQUES", "MAIS DUBLAGEM", "T H E H U B"],
 };
 
 function cleanSingleLine(v: unknown, fallback: string, max = 42) {
