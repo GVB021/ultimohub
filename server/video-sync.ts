@@ -146,7 +146,37 @@ async function getWsIdentity(sessionId: string, req: any) {
     [sessionId, userId],
   );
   const participantRole = pres.rows?.[0]?.role;
-  const studioRole = participantRole ? normalizeStudioRole(participantRole) : platformRole === "platform_owner" ? "platform_owner" : null;
+
+  let studioRole: string | null = participantRole ? normalizeStudioRole(participantRole) : null;
+
+  if (!studioRole && platformRole !== "platform_owner") {
+    const studioMembership = await pool.query(
+      `select coalesce(usr.role, sm.role) as role
+       from sessions s
+       join studio_memberships sm on sm.studio_id = s.studio_id and sm.user_id = $2 and sm.status = 'approved'
+       left join user_studio_roles usr on usr.membership_id = sm.id
+       where s.id = $1
+       order by case
+         when coalesce(usr.role, sm.role) = 'studio_admin' then 1
+         when coalesce(usr.role, sm.role) = 'diretor' then 2
+         when coalesce(usr.role, sm.role) = 'engenheiro_audio' then 3
+         when coalesce(usr.role, sm.role) = 'dublador' then 4
+         when coalesce(usr.role, sm.role) = 'aluno' then 5
+         else 99
+       end
+       limit 1`,
+      [sessionId, userId],
+    );
+    const membershipRole = studioMembership.rows?.[0]?.role;
+    if (membershipRole) {
+      studioRole = normalizeStudioRole(membershipRole);
+    }
+  }
+
+  if (!studioRole && platformRole === "platform_owner") {
+    studioRole = "platform_owner";
+  }
+
   if (!studioRole) return null;
 
   return { userId, role: studioRole, name, platformRole };

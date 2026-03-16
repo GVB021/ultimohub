@@ -605,6 +605,12 @@ export default function RecordingRoom() {
     toast({ title: `Personagem alterado para ${char.name}` });
   };
 
+  useEffect(() => {
+    if (!isMobile) {
+      setDailyMeetOpen(true);
+    }
+  }, [isMobile]);
+
   const handleVideoTouchStart = (e: React.TouchEvent) => {
     const touch = e.touches[0];
     touchStartRef.current = { x: touch.clientX, y: touch.clientY };
@@ -1147,12 +1153,47 @@ export default function RecordingRoom() {
           if (msg.isPlaying && video.paused) video.play().catch(() => {});
           else if (!msg.isPlaying && !video.paused) video.pause();
         }
+      } else if (msg.type === "video:play") {
+        const video = videoRef.current;
+        if (video) {
+          if (typeof msg.currentTime === "number" && Number.isFinite(msg.currentTime)) {
+            const drift = Math.abs(video.currentTime - msg.currentTime);
+            if (drift > 0.12) video.currentTime = msg.currentTime;
+          }
+          if (video.paused) video.play().catch(() => {});
+        }
+      } else if (msg.type === "video:pause") {
+        const video = videoRef.current;
+        if (video) {
+          if (typeof msg.currentTime === "number" && Number.isFinite(msg.currentTime)) {
+            video.currentTime = msg.currentTime;
+          }
+          if (!video.paused) video.pause();
+        }
       } else if (msg.type === "video:seek") {
-        if (videoRef.current) videoRef.current.currentTime = msg.currentTime;
-      } else if (msg.type === "video:countdown") {
+        if (videoRef.current && typeof msg.currentTime === "number") {
+          videoRef.current.currentTime = msg.currentTime;
+        }
+      } else if (msg.type === "video:countdown" || msg.type === "video:countdown-start" || msg.type === "video:countdown-tick") {
         setCountdownValue(msg.count);
         if (msg.count > 0 && micState?.audioContext) {
           playCountdownBeep(micState.audioContext);
+        }
+      } else if (msg.type === "video:loop-preparing") {
+        setLoopPreparing(true);
+        const delayMs = Number(msg.delayMs || 3000);
+        window.setTimeout(() => setLoopPreparing(false), delayMs);
+      } else if (msg.type === "video:loop-silence-window") {
+        setLoopSilenceActive(true);
+        const delayMs = Number(msg.delayMs || 3000);
+        window.setTimeout(() => setLoopSilenceActive(false), delayMs);
+      } else if (msg.type === "video:sync-loop") {
+        if (msg.loopRange && typeof msg.loopRange.start === "number" && typeof msg.loopRange.end === "number") {
+          setCustomLoop({ start: msg.loopRange.start, end: msg.loopRange.end });
+          setIsLooping(true);
+        } else {
+          setCustomLoop(null);
+          setIsLooping(false);
         }
       } else if (msg.type === "text-control:update-line") {
         const patch: ScriptLineOverride = {};
@@ -2809,20 +2850,6 @@ export default function RecordingRoom() {
                 </TooltipContent>
               </Tooltip>
 
-              <div className="flex items-center gap-2 px-3 h-8 rounded-lg bg-white/5 border border-white/10">
-                <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-tighter">Velocidade</span>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="2.5"
-                  step="0.1"
-                  value={teleprompterSpeed}
-                  onChange={(e) => setTeleprompterSpeed(parseFloat(e.target.value))}
-                  className="w-16 h-1 accent-primary cursor-pointer"
-                  title="Ajustar velocidade do teleprompter"
-                />
-                <span className="text-[10px] font-mono text-primary w-6">{teleprompterSpeed.toFixed(1)}x</span>
-              </div>
             </div>
           </TooltipProvider>
         </div>
@@ -2911,21 +2938,6 @@ export default function RecordingRoom() {
                   </button>
                 </Link>
               )}
-              <div className="relative">
-                <button
-                  onClick={() => setDailyMeetOpen((prev) => !prev)}
-                  className={cn(
-                    "w-9 h-9 flex items-center justify-center rounded-xl transition-colors",
-                    dailyMeetOpen
-                      ? "bg-primary/20 text-primary border border-primary/30"
-                      : "bg-white/5 text-muted-foreground hover:text-foreground"
-                  )}
-                  aria-label="Popup de voz e vídeo"
-                  data-testid="button-room-voice-video-popup"
-                >
-                  <Video className="w-4 h-4" />
-                </button>
-              </div>
               <button
                 onClick={() => setIsCustomizing(true)}
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
@@ -2939,12 +2951,15 @@ export default function RecordingRoom() {
         </div>
       </header>
 
-      <DailyMeetPanel
-        sessionId={sessionId}
-        zIndexBase={UI_LAYER_BASE.chatPanel}
-        open={dailyMeetOpen}
-        onOpenChange={setDailyMeetOpen}
-      />
+      {isMobile && (
+        <DailyMeetPanel
+          sessionId={sessionId}
+          zIndexBase={UI_LAYER_BASE.chatPanel}
+          open={dailyMeetOpen}
+          onOpenChange={setDailyMeetOpen}
+          mode="floating"
+        />
+      )}
 
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <div 
@@ -3085,7 +3100,19 @@ export default function RecordingRoom() {
                 )}
               </div>
             )}
-
+            {!isMobile && (
+              <div
+                className="border-t border-white/10 min-h-[220px] bg-zinc-950/90"
+                style={{ height: `${100 - desktopVideoTextSplit}%` }}
+              >
+                <DailyMeetPanel
+                  sessionId={sessionId}
+                  open={dailyMeetOpen}
+                  onOpenChange={setDailyMeetOpen}
+                  mode="embedded"
+                />
+              </div>
+            )}
 
           </div>
 

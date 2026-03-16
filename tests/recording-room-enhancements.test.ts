@@ -122,17 +122,17 @@ test("RecordingRoom aplica preroll de 3s e posroll adaptativo no loop", () => {
 
 test("DailyMeetPanel aplica limites mobile e gesto de swipe para colapsar", () => {
   const daily = readFileSync(dailyMeetPath, "utf8");
-  assert.match(daily, /targetHeightRatio = isLandscape \? 0.3 : 0.25/);
+  assert.match(daily, /targetHeightRatio = isLandscape \? 0.35 : 0.3/);
   assert.match(daily, /if \(delta > 35\) setIsMinimized\(true\)/);
   assert.match(daily, /if \(delta < -35\) setIsMinimized\(false\)/);
   assert.match(daily, /zIndexBase = 1150/);
 });
 
-test("Painel avançado de áudio exibe VU, teste de mic, lossless e seletor de saída", () => {
+test("Painel avançado de áudio exibe VU, lossless e seletor de saída simplificado", () => {
   const panel = readFileSync(devicePanelPath, "utf8");
   assert.match(panel, /Painel Avançado de Áudio/);
-  assert.match(panel, /Testar Microfone \(5s\)/);
-  assert.match(panel, /Teste de saída \(1kHz \/ 2s\)/);
+  assert.doesNotMatch(panel, /Testar Microfone \(5s\)/);
+  assert.doesNotMatch(panel, /Teste de saída \(1kHz \/ 2s\)/);
   assert.match(panel, /setMeterDb/);
   assert.match(panel, /Lossless \(48kHz \/ 24-bit\)/);
   assert.match(panel, /Acesso ao microfone/);

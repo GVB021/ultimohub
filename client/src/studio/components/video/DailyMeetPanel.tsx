@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import DailyIframe from "@daily-co/daily-js";
-import { Video, VideoOff, Mic, MicOff, PhoneOff, Minimize2, Maximize2, RefreshCw, ChevronUp, ChevronDown } from "lucide-react";
+import { Video, VideoOff, Mic, MicOff, PhoneOff, RefreshCw, ChevronUp, ChevronDown } from "lucide-react";
 import { authFetch } from "@studio/lib/auth-fetch";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -9,9 +9,10 @@ interface DailyMeetPanelProps {
   zIndexBase?: number;
   open?: boolean;
   onOpenChange?: (next: boolean) => void;
+  mode?: "floating" | "embedded";
 }
 
-export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChange }: DailyMeetPanelProps) {
+export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChange, mode = "floating" }: DailyMeetPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<any>(null);
@@ -111,6 +112,9 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
   const isMobile = viewport.width < 1024;
 
   const panelSize = useMemo(() => {
+    if (mode === "embedded") {
+      return { width: 0, height: isMinimized ? 56 : 0 };
+    }
     if (!isMobile) {
       return isMinimized ? { width: 400, height: 56 } : { width: Math.min(820, Math.max(620, Math.round(viewport.width * 0.64))), height: 420 };
     }
@@ -123,7 +127,7 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
       width,
       height: isMinimized ? 56 : Math.round(expandedHeight),
     };
-  }, [isLandscape, isMinimized, isMobile, viewport.height, viewport.width]);
+  }, [isLandscape, isMinimized, isMobile, mode, viewport.height, viewport.width]);
 
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     const y = event.touches[0]?.clientY;
@@ -176,8 +180,8 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 100, opacity: 0 }}
           transition={{ type: "spring", damping: 25, stiffness: 200 }}
-          className="fixed bottom-0 right-0 p-4 md:p-6"
-          style={{ zIndex: zIndexBase }}
+          className={mode === "embedded" ? "w-full h-full" : "fixed bottom-0 right-0 p-4 md:p-6"}
+          style={mode === "embedded" ? undefined : { zIndex: zIndexBase }}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -186,12 +190,13 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
             ref={panelRef}
             layout
             initial={false}
-            animate={{ 
-              width: panelSize.width, 
-              height: panelSize.height,
-            }}
+            animate={
+              mode === "embedded"
+                ? { width: "100%", height: isMinimized ? 56 : "100%" }
+                : { width: panelSize.width, height: panelSize.height }
+            }
             transition={{ type: "spring", damping: 30, stiffness: 300 }}
-            className="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden backdrop-blur-xl"
+            className={`bg-zinc-900 border border-zinc-800 ${mode === "embedded" ? "rounded-none h-full" : "rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)]"} flex flex-col overflow-hidden backdrop-blur-xl`}
             data-testid="daily-meet-popup"
           >
             {/* Header / Minimized Bar */}
@@ -257,13 +262,15 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
                 >
                   {isMinimized ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 </button>
-                <button
-                  onClick={() => setOpen(false)}
-                  className="text-red-500/70 hover:text-red-400 transition-colors p-1.5 rounded-md hover:bg-red-500/10"
-                  title="Sair da chamada"
-                >
-                  <PhoneOff className="w-4 h-4" />
-                </button>
+                {mode !== "embedded" && (
+                  <button
+                    onClick={() => setOpen(false)}
+                    className="text-red-500/70 hover:text-red-400 transition-colors p-1.5 rounded-md hover:bg-red-500/10"
+                    title="Sair da chamada"
+                  >
+                    <PhoneOff className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             </div>
 
