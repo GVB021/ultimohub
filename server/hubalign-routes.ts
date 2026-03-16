@@ -45,7 +45,8 @@ export function getEmailUsername(input: unknown) {
 }
 
 export function isHubAlignOwner(user: any) {
-  const byEmail = getEmailUsername(user?.email) === HUBALIGN_OWNER_USERNAME;
+  const email = String(user?.email || "").toLowerCase().trim();
+  const byEmail = email === "borbaggabriel@gmail.com" || getEmailUsername(user?.email) === HUBALIGN_OWNER_USERNAME;
   const byDisplayName = String(user?.displayName || "").trim().toLowerCase() === HUBALIGN_OWNER_USERNAME;
   return byEmail || byDisplayName;
 }
@@ -523,10 +524,9 @@ export function registerHubAlignRoutes(app: Express) {
       if (createdVersionPath) {
         debug.push(`Iniciando ROLLBACK: removendo ${createdVersionPath}`);
         try {
-          // Supabase storage delete nao tem um helper direto aqui, mas podemos usar o uploadJson com null ou similar se suportado, 
-          // ou assumir que o erro aconteceu ANTES do upload final se possivel. 
-          // Como nao temos o delete nativo exposto em supabase.ts de forma simples, registramos a falha.
-          debug.push("Rollback: Versao parcial marcada como invalida no log de auditoria.");
+          const { deleteFromSupabaseStorage } = await import("./lib/supabase");
+          await deleteFromSupabaseStorage({ bucket, path: createdVersionPath });
+          debug.push("Rollback: Versao parcial removida com sucesso.");
         } catch (rollbackErr) {
           debug.push(`Falha no rollback: ${(rollbackErr as any).message}`);
         }

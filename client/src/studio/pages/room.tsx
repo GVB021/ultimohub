@@ -566,6 +566,8 @@ export default function RecordingRoom() {
   const [teleprompterSpeed, setTeleprompterSpeed] = useState(1);
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
 
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+
   // Novo sistema de preview de áudio antes do envio
   const [pendingTake, setPendingTake] = useState<{
     samples: Float32Array;
@@ -892,6 +894,27 @@ export default function RecordingRoom() {
   });
   const [isDraggingSideScript, setIsDraggingSideScript] = useState(false);
 
+  const [scriptFontSize, setScriptFontSize] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("vhub_script_font_size");
+      return saved ? Number(saved) : 15;
+    } catch {
+      return 15;
+    }
+  });
+
+  const dynamicFontSize = useMemo(() => {
+    if (isMobile) return scriptFontSize;
+    // Se desktopVideoTextSplit aumenta (vídeo ocupa mais espaço), o roteiro diminui.
+    // desktopVideoTextSplit vai de 50 a 80.
+    // Quando desktopVideoTextSplit é 80 (vídeo grande), queremos fonte menor.
+    // Quando desktopVideoTextSplit é 50 (vídeo metade), queremos fonte normal.
+    const ratio = (80 - desktopVideoTextSplit) / 30; // 1.0 (em 50) para 0.0 (em 80)
+    const minSize = 12;
+    const calculated = minSize + (scriptFontSize - minSize) * ratio;
+    return Math.max(minSize, calculated);
+  }, [desktopVideoTextSplit, scriptFontSize, isMobile]);
+
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
   const [recordingAvailability, setRecordingAvailability] = useState<Record<string, RecordingAvailabilityState>>({});
   const [recordingPlayableUrls, setRecordingPlayableUrls] = useState<Record<string, string>>({});
@@ -1151,7 +1174,20 @@ export default function RecordingRoom() {
         const ids = Array.isArray(msg.targetUserIds) ? msg.targetUserIds : msg.controllerUserIds;
         setTextControllerUserIds(new Set(ids || []));
       } else if (msg.type === "presence:update" || msg.type === "presence-sync") {
-        setPresenceUsers(msg.users);
+        const prevCount = presenceUsers.length;
+        const newCount = (msg.users || []).length;
+        if (newCount > prevCount) {
+          const newUser = msg.users.find((u: any) => !presenceUsers.some((p: any) => p.userId === u.userId));
+          if (newUser && newUser.userId !== user?.id) {
+            toast({ title: `${newUser.name || "Alguém"} entrou na sala`, description: "Acompanhe as gravações em conjunto.", variant: "default" });
+          }
+        } else if (newCount < prevCount) {
+          const leftUser = presenceUsers.find((p: any) => !msg.users.some((u: any) => u.userId === p.userId));
+          if (leftUser && leftUser.userId !== user?.id) {
+            toast({ title: `${leftUser.name || "Alguém"} saiu da sala`, variant: "default" });
+          }
+        }
+        setPresenceUsers(msg.users || []);
       } else if (msg.type === "video:take-status") {
         if (String(msg.targetUserId || "") !== String(user?.id || "")) return;
         if (msg.status === "deleted") {
@@ -1653,6 +1689,20 @@ export default function RecordingRoom() {
       }
     }
 
+    // Validação de duração mínima de 3 segundos
+    if (result.durationSeconds < 3) {
+      toast({
+        title: "Gravação muito curta",
+        description: "A duração mínima permitida é de 3 segundos.",
+        variant: "destructive",
+      });
+      setRecordingStatus("idle");
+      setLastRecording(null);
+      setQualityMetrics(null);
+      logAudioStep("stop-too-short", { duration: result.durationSeconds });
+      return;
+    }
+
     // Gerar blob local para preview
     const wavBuffer = encodeWav(result.samples);
     const wavBlob = wavToBlob(wavBuffer);
@@ -1677,7 +1727,18 @@ export default function RecordingRoom() {
     if (!pendingTake) return;
     try {
       setIsSaving(true);
+      setUploadProgress(10); // Simular progresso inicial
+
       const startedAt = performance.now();
+      
+      // Simular upload progressivo visual enquanto o upload real acontece
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          if (prev === null || prev >= 90) return prev;
+          return prev + 5;
+        });
+      }, 100);
+
       await uploadTakeForDirector({
         wavBlob: pendingTake.blob,
         durationSeconds: pendingTake.durationSeconds,
@@ -1686,20 +1747,30 @@ export default function RecordingRoom() {
         lineIndex: pendingTake.lineIndex,
         startTimeSeconds: pendingTake.startTimeSeconds,
       });
+
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+
       const elapsedMs = performance.now() - startedAt;
       if (elapsedMs > 3000) {
         toast({ title: "Salvamento acima da meta", description: `${Math.round(elapsedMs)}ms`, variant: "destructive" });
       }
+      
       toast({ title: "Take gravado com sucesso" });
       await logFeatureAudit("room.take.auto_saved", { lineIndex: pendingTake.lineIndex });
       
-      // Cleanup
-      URL.revokeObjectURL(pendingTake.url);
-      setPendingTake(null);
-      setRecordingStatus("idle");
-      setLastRecording(null);
-      setQualityMetrics(null);
+      // Pequeno delay para mostrar o 100% antes de fechar
+      setTimeout(() => {
+        URL.revokeObjectURL(pendingTake.url);
+        setPendingTake(null);
+        setRecordingStatus("idle");
+        setLastRecording(null);
+        setQualityMetrics(null);
+        setUploadProgress(null);
+      }, 500);
+
     } catch (err: any) {
+      setUploadProgress(null);
       logAudioStep("upload-error", { message: String(err?.message || err) });
       try {
         await enqueuePendingUpload({
@@ -2146,8 +2217,22 @@ export default function RecordingRoom() {
     return () => {
       if (loopPreparationTimeoutRef.current) window.clearTimeout(loopPreparationTimeoutRef.current);
       if (loopSilenceTimeoutRef.current) window.clearTimeout(loopSilenceTimeoutRef.current);
+      
+      // Limpar todos os Object URLs criados para evitar memory leaks
+      Object.values(cachedRecordingBlobUrlsRef.current).forEach(url => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.warn("[Room] Falha ao revogar URL no cleanup:", e);
+        }
+      });
+      cachedRecordingBlobUrlsRef.current = {};
+      
+      if (pendingTake?.url) {
+        URL.revokeObjectURL(pendingTake.url);
+      }
     };
-  }, []);
+  }, [pendingTake?.url]);
 
   if (sessionLoading || productionLoading) {
     return (
@@ -2790,12 +2875,32 @@ export default function RecordingRoom() {
             </div>
           )}
           {canViewOnlineUsers && !isMobile && (
-            <div
-              className="h-7 px-2 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 flex items-center gap-1.5"
-              title={onlineRosterForCurrentRole.map((presence: any) => presence.name || presence.userId).join(", ")}
-            >
-              <Users className="w-3.5 h-3.5" />
-              <span>{onlineRosterForCurrentRole.length} online</span>
+            <div className="flex -space-x-2 mr-2">
+              {onlineRosterForCurrentRole.slice(0, 3).map((u: any, idx) => (
+                <div 
+                  key={u.userId || idx}
+                  className={cn(
+                    "w-7 h-7 rounded-full border-2 border-background bg-zinc-800 flex items-center justify-center text-[10px] font-bold uppercase relative group",
+                    u.status === "busy" ? "ring-1 ring-amber-500/50" : "ring-1 ring-emerald-500/50"
+                  )}
+                  title={`${u.name || "Usuário"} (${u.status || "online"})`}
+                >
+                  {u.avatar ? (
+                    <img src={u.avatar} alt="" className="w-full h-full rounded-full object-cover" />
+                  ) : (
+                    <span>{(u.name || "U").charAt(0)}</span>
+                  )}
+                  <div className={cn(
+                    "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-background",
+                    u.status === "busy" ? "bg-amber-500" : "bg-emerald-500"
+                  )} />
+                </div>
+              ))}
+              {onlineRosterForCurrentRole.length > 3 && (
+                <div className="w-7 h-7 rounded-full border-2 border-background bg-zinc-700 flex items-center justify-center text-[10px] font-bold text-white/70">
+                  +{onlineRosterForCurrentRole.length - 3}
+                </div>
+              )}
             </div>
           )}
           
@@ -3041,9 +3146,40 @@ export default function RecordingRoom() {
             )}
 
             <div
-              className="bg-zinc-950 border-t border-white/5 px-6 py-6 sm:px-10 sm:py-8 min-h-[180px] flex flex-col justify-center transition-all overflow-hidden"
+              className="bg-zinc-950 border-t border-white/5 px-6 py-6 sm:px-10 sm:py-8 min-h-[180px] flex flex-col justify-center transition-all overflow-hidden relative group/footer"
               style={isMobile ? undefined : { height: `${100 - desktopVideoTextSplit}%` }}
             >
+              {/* Controles de Tamanho de Fonte Manuais */}
+              {!isMobile && (
+                <div className="absolute top-4 right-4 flex items-center gap-2 opacity-0 group-hover/footer:opacity-100 transition-opacity z-50">
+                  <button
+                    onClick={() => {
+                      const next = Math.max(10, scriptFontSize - 1);
+                      setScriptFontSize(next);
+                      localStorage.setItem("vhub_script_font_size", String(next));
+                    }}
+                    className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white border border-white/10"
+                    title="Diminuir fonte"
+                  >
+                    <span className="text-xs font-bold">-</span>
+                  </button>
+                  <div className="px-2 py-1 bg-white/5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50">
+                    {Math.round(dynamicFontSize)}px
+                  </div>
+                  <button
+                    onClick={() => {
+                      const next = Math.min(24, scriptFontSize + 1);
+                      setScriptFontSize(next);
+                      localStorage.setItem("vhub_script_font_size", String(next));
+                    }}
+                    className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white border border-white/10"
+                    title="Aumentar fonte"
+                  >
+                    <span className="text-xs font-bold">+</span>
+                  </button>
+                </div>
+              )}
+
               {currentScriptLine ? (
                 <div className="max-w-4xl mx-auto w-full">
                   <div className="flex items-center gap-3 mb-3">
@@ -3054,10 +3190,13 @@ export default function RecordingRoom() {
                       {currentScriptLine.character}
                     </span>
                   </div>
-                  <p className={cn(
-                    "text-white font-semibold leading-tight tracking-tight",
-                    isMobile ? "text-2xl sm:text-3xl" : "text-3xl md:text-5xl lg:text-6xl"
-                  )}>
+                  <p 
+                    className={cn(
+                      "text-white font-semibold leading-tight tracking-tight",
+                      isMobile ? "text-2xl sm:text-3xl" : ""
+                    )}
+                    style={!isMobile ? { fontSize: `${dynamicFontSize}px` } : undefined}
+                  >
                     {currentScriptLine.text}
                   </p>
                 </div>
@@ -3241,14 +3380,23 @@ export default function RecordingRoom() {
                     <button
                       onClick={handleApproveTake}
                       disabled={isSaving}
-                      className="h-10 px-6 rounded-full bg-primary text-primary-foreground font-bold text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
+                      className="h-10 px-6 rounded-full bg-primary text-primary-foreground font-bold text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50 relative overflow-hidden"
                     >
-                      {isSaving ? (
-                        <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin rounded-full" />
-                      ) : (
-                        <CheckCircle2 className="w-5 h-5" />
+                      {uploadProgress !== null && (
+                        <motion.div 
+                          className="absolute inset-0 bg-white/20 origin-left"
+                          initial={{ scaleX: 0 }}
+                          animate={{ scaleX: uploadProgress / 100 }}
+                        />
                       )}
-                      {isSaving ? "Enviando..." : "Aprovar e Enviar"}
+                      <span className="relative z-10 flex items-center gap-2">
+                        {isSaving ? (
+                          <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin rounded-full" />
+                        ) : (
+                          <CheckCircle2 className="w-5 h-5" />
+                        )}
+                        {isSaving ? `Enviando ${uploadProgress}%` : "Aprovar e Enviar"}
+                      </span>
                     </button>
                   </div>
                 </div>
