@@ -30,8 +30,10 @@ import {
   configureSupabase,
   createSignedSupabaseUrlFromPublicUrl,
   deleteFromSupabaseStorage,
+  downloadFromSupabaseStorage,
   downloadFromSupabaseStorageUrl,
   isSupabaseConfigured,
+  listSupabaseStorageObjects,
   parseSupabaseStorageUrl,
   uploadToSupabaseStorage,
 } from "./lib/supabase";
@@ -190,6 +192,50 @@ const ALLOWED_AUDIO_MIME_PREFIXES = ["audio/wav", "audio/x-wav", "audio/mpeg", "
 const MAX_TAKE_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 const MIN_SAMPLE_RATE_HZ = 44100;
 const SUPABASE_DOWNLOAD_URL_TTL_SECONDS = 24 * 60 * 60;
+
+function normalizeTakeFolder(value: unknown) {
+  return normalizeSegment(String(value || ""));
+}
+
+function resolveTakeSearchPrefix(take: any, settings: Record<string, string>) {
+  const bucket = String(settings.SUPABASE_BUCKET || "takes").trim();
+  const takesPath = String(take?.takesPath || settings.DEFAULT_TAKES_PATH || "uploads").trim();
+  const baseFolder = normalizeTakeFolder(takesPath || "uploads");
+  const studioName = normalizeTakeFolder(take?.studioName);
+  const productionName = normalizeTakeFolder(take?.productionName);
+  const actorName = normalizeTakeFolder(take?.voiceActorName);
+  const characterName = normalizeTakeFolder(take?.characterName);
+  const segments =
+    bucket.toLowerCase() === baseFolder
+      ? [studioName, productionName, actorName, characterName]
+      : [baseFolder, studioName, productionName, actorName, characterName];
+  const prefix = segments.filter(Boolean).join("/");
+  if (!bucket || !prefix) return null;
+  return { bucket, prefix: `${prefix}/` };
+}
+
+async function findTakeAudioInSupabase(take: any) {
+  if (!isSupabaseConfigured()) return null;
+  const settings = await storage.getAllSettings();
+  const target = resolveTakeSearchPrefix(take, settings);
+  if (!target) return null;
+  const rows = await listSupabaseStorageObjects({
+    bucket: target.bucket,
+    prefix: target.prefix,
+    limit: 50,
+    offset: 0,
+    sortBy: { column: "updated_at", order: "desc" },
+  });
+  for (const row of rows as any[]) {
+    const name = String(row?.name || "").trim();
+    if (!name) continue;
+    const ext = path.extname(name).toLowerCase();
+    if (!ALLOWED_AUDIO_EXTENSIONS.has(ext)) continue;
+    const objectPath = `${target.prefix.replace(/\/+$/g, "")}/${name.replace(/^\/+/g, "")}`;
+    return { bucket: target.bucket, path: objectPath };
+  }
+  return null;
+}
 
 type PendingTakeUploadJob = {
   takeId: string;
@@ -1568,9 +1614,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return;
       }
 
-      if (isHttpUrl(take.audioUrl)) {
-        const range = String(req.headers.range || "");
-        const upstream = await fetchAudioResponse(take.audioUrl, range);
+      const range = String(req.headers.range || "");
+      const streamFromResponse = async (upstream: globalThis.Response) => {
         const contentType = upstream.headers.get("content-type") || "application/octet-stream";
         res.status(upstream.status);
         res.setHeader("Content-Type", contentType);
@@ -1581,8 +1626,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const contentRange = upstream.headers.get("content-range");
         if (contentRange) res.setHeader("Content-Range", contentRange);
         const stream = toNodeReadable(upstream.body);
-        if (!stream) return res.status(500).json({ message: "Falha ao obter stream" });
+        if (!stream) throw new Error("Falha ao obter stream");
         stream.pipe(res);
+      };
+
+      if (isHttpUrl(take.audioUrl)) {
+        try {
+          const upstream = await fetchAudioResponse(take.audioUrl, range);
+          await streamFromResponse(upstream);
+          return;
+        } catch (error: any) {
+          logger.warn("[Takes] Primary URL stream failed, trying Supabase fallback", {
+            takeId: take.id,
+            sessionId: take.sessionId,
+            audioUrl: take.audioUrl,
+            message: String(error?.message || error),
+          });
+        }
+      }
+
+      const fallbackObject = await findTakeAudioInSupabase(take);
+      if (fallbackObject) {
+        const upstream = await downloadFromSupabaseStorage(fallbackObject, range ? { range } : undefined);
+        await streamFromResponse(upstream);
         return;
       }
 

@@ -31,7 +31,7 @@ export function AppHeader({
   setLang: (lang: "en" | "pt") => void;
   textConfig?: Partial<LandingHeaderTextConfig>;
 }) {
-  const { user, isLoading, logoutMutation } = useAuth();
+  const { user, isLoading, logout } = useAuth();
   const [, navigate] = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -119,7 +119,7 @@ export function AppHeader({
                 <div className="p-6 border-t border-border">
                   <button
                     onClick={() => {
-                      logoutMutation.mutate();
+                      logout();
                       setIsMobileMenuOpen(false);
                     }}
                     className="w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-destructive/10 text-destructive transition-all"

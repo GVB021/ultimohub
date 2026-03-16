@@ -29,7 +29,23 @@ test("gravações expõem ações de reprodução e download sem refresh manual"
   assert.match(room, /recordingsPreviewAudioRef/);
 });
 
+test("gravações usam stream autenticado com cache local e validação de blob", () => {
+  const room = readFileSync(roomPath, "utf8");
+  assert.match(room, /resolveTakePlayableUrl/);
+  assert.match(room, /validateTakeAudioBlob/);
+  assert.match(room, /caches\.open\("vhub_audio_takes_v1"\)/);
+  assert.match(room, /\/api\/takes\/\$\{takeId\}\/stream/);
+  assert.match(room, /Carregando mídia/);
+});
+
 test("endpoint recordings usa dados detalhados para lista consistente", () => {
   const routes = readFileSync(routesPath, "utf8");
   assert.match(routes, /getSessionTakesWithDetails\(req\.params\.sessionId\)/);
+});
+
+test("stream de take possui fallback de busca automática no Supabase", () => {
+  const routes = readFileSync(routesPath, "utf8");
+  assert.match(routes, /findTakeAudioInSupabase/);
+  assert.match(routes, /listSupabaseStorageObjects/);
+  assert.match(routes, /downloadFromSupabaseStorage/);
 });

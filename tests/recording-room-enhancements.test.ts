@@ -93,15 +93,17 @@ test("RecordingRoom valida edição de timecode e histórico de alterações", (
   assert.match(room, /Cancelar/);
 });
 
-test("RecordingRoom usa websocket de sync e valida links de áudio", () => {
+test("RecordingRoom usa websocket de sync e pipeline robusto de áudio", () => {
   const room = readFileSync(roomPath, "utf8");
   assert.match(room, /\/ws\/video-sync\?sessionId=/);
-  assert.match(room, /validateTakeStreamLink/);
-  assert.match(room, /Range: "bytes=0-1"/);
+  assert.match(room, /resolveTakePlayableUrl/);
+  assert.match(room, /validateTakeAudioBlob/);
+  assert.match(room, /caches\.open\("vhub_audio_takes_v1"\)/);
   assert.match(room, /controls\s+className="w-full h-8"/);
   assert.match(room, /\[Room\]\[Recordings\] iniciando leitura de takes/);
   assert.match(room, /Falha de conexão com o banco de áudio/);
   assert.match(room, /Mídia disponível/);
+  assert.match(room, /Carregando mídia/);
   assert.match(room, /UI_ROLE_PERMISSIONS/);
   assert.match(room, /resolveUiRole/);
 });

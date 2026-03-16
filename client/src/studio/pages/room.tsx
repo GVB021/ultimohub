@@ -124,6 +124,8 @@ export interface ScrollAnchor {
   scrollTop: number;
 }
 
+type RecordingAvailabilityState = "available" | "loading" | "error";
+
 import { DailyMeetPanel } from "@studio/components/video/DailyMeetPanel";
 
 const DEFAULT_SHORTCUTS: Shortcuts = {
@@ -854,7 +856,9 @@ export default function RecordingRoom() {
   const [recordingsPlaybackRate, setRecordingsPlaybackRate] = useState(1);
 
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
-  const [recordingAvailability, setRecordingAvailability] = useState<Record<string, "available" | "error">>({});
+  const [recordingAvailability, setRecordingAvailability] = useState<Record<string, RecordingAvailabilityState>>({});
+  const [recordingPlayableUrls, setRecordingPlayableUrls] = useState<Record<string, string>>({});
+  const cachedRecordingBlobUrlsRef = useRef<Record<string, string>>({});
 
   const [textControlPopupOpen, setTextControlPopupOpen] = useState(false);
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
@@ -880,11 +884,11 @@ export default function RecordingRoom() {
   }, [recordingsList]);
   useEffect(() => {
     setRecordingAvailability((prev) => {
-      const next: Record<string, "available" | "error"> = {};
+      const next: Record<string, RecordingAvailabilityState> = {};
       scopedRecordings.forEach((take: any) => {
         const id = String(take?.id || "");
         if (!id) return;
-        next[id] = prev[id] || (take?.audioUrl || take?.id ? "available" : "error");
+        next[id] = prev[id] || (take?.audioUrl || take?.id ? "loading" : "error");
       });
       return next;
     });
@@ -899,6 +903,16 @@ export default function RecordingRoom() {
     if (!audio) return;
     audio.playbackRate = recordingsPlaybackRate;
   }, [recordingsPlayerOpenId, recordingsPlaybackRate]);
+  useEffect(() => {
+    return () => {
+      Object.values(cachedRecordingBlobUrlsRef.current).forEach((url) => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+      });
+      cachedRecordingBlobUrlsRef.current = {};
+    };
+  }, []);
   const isApproverRole = useCallback((role: string | undefined | null) => {
     if (!role) return false;
     return hasUiPermission(resolveUiRole(role, false), "approve_take");
@@ -1756,22 +1770,135 @@ export default function RecordingRoom() {
   }, [canReleaseText, textControllerUserIds, emitTextControlEvent]);
 
   const getTakeStreamUrl = useCallback((take: any) => {
-    const rawUrl = String(take?.audioUrl || "").trim();
-    if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
-    return `/api/takes/${take.id}/stream`;
+    const takeId = String(take?.id || "").trim();
+    if (!takeId) return "";
+    return `/api/takes/${takeId}/stream`;
   }, []);
 
-  const validateTakeStreamLink = useCallback(async (take: any) => {
-    const streamUrl = getTakeStreamUrl(take);
-    const response = await fetch(streamUrl, {
-      credentials: "include",
-      headers: { Range: "bytes=0-1" },
-    });
-    if (!response.ok) {
-      throw new Error(`Arquivo inacessível (${response.status})`);
+  const validateTakeAudioBlob = useCallback(async (take: any, blob: Blob) => {
+    if (!blob || blob.size <= 0) {
+      throw new Error("Arquivo vazio.");
     }
-    return streamUrl;
-  }, [getTakeStreamUrl]);
+    const maxBytes = 100 * 1024 * 1024;
+    if (blob.size > maxBytes) {
+      throw new Error("Arquivo excede o limite de 100MB.");
+    }
+    const name = String(take?.fileName || take?.audioUrl || "").toLowerCase();
+    const ext = name.includes(".") ? `.${name.split(".").pop()}` : "";
+    const type = String(blob.type || "").toLowerCase();
+    const validExt = [".mp3", ".wav", ".m4a"].includes(ext);
+    const validType = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"].some((item) => type.startsWith(item));
+    if (!validExt && !validType) {
+      throw new Error("Formato de áudio não suportado.");
+    }
+    const duration = await new Promise<number>((resolve, reject) => {
+      const probeUrl = URL.createObjectURL(blob);
+      const probeAudio = new Audio();
+      const timeout = window.setTimeout(() => {
+        probeAudio.src = "";
+        URL.revokeObjectURL(probeUrl);
+        reject(new Error("Tempo limite ao validar metadados do áudio."));
+      }, 12000);
+      probeAudio.preload = "metadata";
+      probeAudio.onloadedmetadata = () => {
+        window.clearTimeout(timeout);
+        const value = Number(probeAudio.duration || 0);
+        probeAudio.src = "";
+        URL.revokeObjectURL(probeUrl);
+        resolve(value);
+      };
+      probeAudio.onerror = () => {
+        window.clearTimeout(timeout);
+        probeAudio.src = "";
+        URL.revokeObjectURL(probeUrl);
+        reject(new Error("Arquivo de áudio corrompido ou inválido."));
+      };
+      probeAudio.src = probeUrl;
+    });
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error("Duração inválida do arquivo de áudio.");
+    }
+  }, []);
+
+  const resolveTakePlayableUrl = useCallback(async (take: any, opts?: { prefetch?: boolean }) => {
+    const takeId = String(take?.id || "");
+    if (!takeId) throw new Error("Take inválido.");
+    const inMemory = cachedRecordingBlobUrlsRef.current[takeId];
+    if (inMemory) return inMemory;
+    const streamUrl = getTakeStreamUrl(take);
+    if (!streamUrl) throw new Error("URL de stream indisponível.");
+    setRecordingAvailability((prev) => ({ ...prev, [takeId]: "loading" }));
+
+    const cacheStorage = typeof window !== "undefined" && "caches" in window ? await caches.open("vhub_audio_takes_v1").catch(() => null) : null;
+    const cacheRequest = new Request(streamUrl, { credentials: "include" });
+    if (cacheStorage) {
+      const cachedResponse = await cacheStorage.match(cacheRequest);
+      if (cachedResponse?.ok) {
+        const blob = await cachedResponse.blob();
+        await validateTakeAudioBlob(take, blob);
+        const objectUrl = URL.createObjectURL(blob);
+        cachedRecordingBlobUrlsRef.current[takeId] = objectUrl;
+        setRecordingPlayableUrls((prev) => ({ ...prev, [takeId]: objectUrl }));
+        setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
+        return objectUrl;
+      }
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), opts?.prefetch ? 15000 : 30000);
+    const startedAt = performance.now();
+    try {
+      const response = await fetch(streamUrl, {
+        credentials: "include",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Arquivo inacessível (${response.status})`);
+      }
+      const blob = await response.blob();
+      await validateTakeAudioBlob(take, blob);
+      if (cacheStorage) {
+        await cacheStorage.put(cacheRequest, new Response(blob, { headers: { "content-type": blob.type || "audio/wav" } })).catch(() => {});
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      cachedRecordingBlobUrlsRef.current[takeId] = objectUrl;
+      setRecordingPlayableUrls((prev) => ({ ...prev, [takeId]: objectUrl }));
+      setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
+      console.info("[Room][Audio] take carregado", {
+        takeId,
+        bytes: blob.size,
+        contentType: blob.type || null,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      });
+      return objectUrl;
+    } catch (error: any) {
+      setRecordingAvailability((prev) => ({ ...prev, [takeId]: "error" }));
+      throw new Error(error?.name === "AbortError" ? "Tempo limite ao carregar áudio." : String(error?.message || error));
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }, [getTakeStreamUrl, validateTakeAudioBlob]);
+
+  useEffect(() => {
+    if (!recordingsOpen) return;
+    const targets = scopedRecordings.slice(0, 4);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    const run = async () => {
+      for (const take of targets) {
+        if (cancelled) break;
+        const id = String(take?.id || "");
+        if (!id || recordingAvailability[id] === "available") continue;
+        try {
+          await resolveTakePlayableUrl(take, { prefetch: true });
+        } catch {}
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [recordingsOpen, scopedRecordings, resolveTakePlayableUrl, recordingAvailability]);
 
   const handleDownloadTake = useCallback(async (take: any) => {
     try {
@@ -2135,9 +2262,28 @@ export default function RecordingRoom() {
                       <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
                       <span className={cn("col-span-2 flex items-center gap-1.5", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
                         <span>{take.status === "approved" ? "Aprovado" : "Pendente"}</span>
-                        <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", recordingAvailability[String(take.id || "")] === "error" ? "bg-red-500" : "bg-emerald-500")} />
-                        <span className={cn("text-[10px]", recordingAvailability[String(take.id || "")] === "error" ? "text-red-500" : "text-emerald-500")}>
-                          {recordingAvailability[String(take.id || "")] === "error" ? "Mídia indisponível" : "Mídia disponível"}
+                        <span className={cn(
+                          "inline-flex h-1.5 w-1.5 rounded-full",
+                          recordingAvailability[String(take.id || "")] === "error"
+                            ? "bg-red-500"
+                            : recordingAvailability[String(take.id || "")] === "loading"
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                        )} />
+                        <span className={cn(
+                          "text-[10px] inline-flex items-center gap-1",
+                          recordingAvailability[String(take.id || "")] === "error"
+                            ? "text-red-500"
+                            : recordingAvailability[String(take.id || "")] === "loading"
+                              ? "text-amber-500"
+                              : "text-emerald-500"
+                        )}>
+                          {recordingAvailability[String(take.id || "")] === "loading" && <Loader2 className="w-3 h-3 animate-spin" />}
+                          {recordingAvailability[String(take.id || "")] === "error"
+                            ? "Mídia indisponível"
+                            : recordingAvailability[String(take.id || "")] === "loading"
+                              ? "Carregando mídia"
+                              : "Mídia disponível"}
                         </span>
                       </span>
                       <span className="col-span-1 text-right font-mono text-muted-foreground">
@@ -2155,9 +2301,10 @@ export default function RecordingRoom() {
                               return;
                             }
                             try {
-                              const streamUrl = await validateTakeStreamLink(take);
-                              setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "available" }));
-                              audio.src = streamUrl;
+                              const takeId = String(take?.id || "");
+                              setRecordingAvailability((prev) => ({ ...prev, [takeId]: "loading" }));
+                              const streamUrl = await resolveTakePlayableUrl(take);
+                              audio.src = streamUrl || getTakeStreamUrl(take);
                               await audio.play();
                               setRecordingsPreviewId(take.id);
                               setRecordingsPlayerOpenId(take.id);
@@ -2220,10 +2367,14 @@ export default function RecordingRoom() {
                           ref={(node) => { recordingRowAudioRefs.current[String(take.id)] = node; }}
                           controls
                           className="w-full h-8"
-                          src={getTakeStreamUrl(take)}
+                          src={recordingPlayableUrls[String(take.id)] || getTakeStreamUrl(take)}
                           preload="none"
                           onLoadedMetadata={(event) => {
                             event.currentTarget.playbackRate = recordingsPlaybackRate;
+                            setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "available" }));
+                          }}
+                          onError={() => {
+                            setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "error" }));
                           }}
                         />
                       </div>
