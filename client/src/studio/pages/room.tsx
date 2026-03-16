@@ -31,6 +31,7 @@ import {
   ArrowUpDown,
   UserCheck,
   MousePointer2,
+  Video,
 } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@studio/hooks/use-toast";
@@ -550,6 +551,7 @@ export default function RecordingRoom() {
   const [charSelectorOpen, setCharSelectorOpen] = useState(false);
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
   const [recordingsOpen, setRecordingsOpen] = useState(false);
+  const [dailyMeetOpen, setDailyMeetOpen] = useState(false);
   const [recordingsScope, setRecordingsScope] = useState<"mine" | "all">("mine");
   const [recordingsPage, setRecordingsPage] = useState(1);
   const [recordingsSearch, setRecordingsSearch] = useState("");
@@ -813,6 +815,7 @@ export default function RecordingRoom() {
   const [videoTime, setVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const desktopVideoTextContainerRef = useRef<HTMLDivElement>(null);
   const scriptViewportRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [scriptAutoFollow, setScriptAutoFollow] = useState(() => {
@@ -841,6 +844,8 @@ export default function RecordingRoom() {
   const recordingRowAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const [recordingsPreviewId, setRecordingsPreviewId] = useState<string | null>(null);
   const [recordingsPlaybackRate, setRecordingsPlaybackRate] = useState(1);
+  const [desktopVideoTextSplit, setDesktopVideoTextSplit] = useState(50);
+  const [isDraggingVideoTextSplit, setIsDraggingVideoTextSplit] = useState(false);
 
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
   const [recordingAvailability, setRecordingAvailability] = useState<Record<string, RecordingAvailabilityState>>({});
@@ -870,6 +875,25 @@ export default function RecordingRoom() {
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isDraggingVideoTextSplit || isMobile) return;
+    const handlePointerMove = (event: PointerEvent) => {
+      const container = desktopVideoTextContainerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const localY = event.clientY - rect.top;
+      const next = (localY / rect.height) * 100;
+      setDesktopVideoTextSplit(Math.max(32, Math.min(68, next)));
+    };
+    const handlePointerUp = () => setIsDraggingVideoTextSplit(false);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isDraggingVideoTextSplit, isMobile]);
 
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
   const [presenceUsers, setPresenceUsers] = useState<any[]>([]);
@@ -1892,7 +1916,8 @@ export default function RecordingRoom() {
       for (const take of targets) {
         if (cancelled) break;
         const id = String(take?.id || "");
-        if (!id || recordingAvailability[id] === "available") continue;
+        const availability = recordingAvailability[id];
+        if (!id || availability === "available" || availability === "loading" || availability === "error") continue;
         try {
           await resolveTakePlayableUrl(take, { prefetch: true });
         } catch {}
@@ -1906,17 +1931,30 @@ export default function RecordingRoom() {
 
   const handleDownloadTake = useCallback(async (take: any) => {
     try {
-      const payload = await authFetch(`/api/takes/${take.id}/download-link`);
-      const url = String(payload?.url || "");
-      if (!url) throw new Error("Link temporário indisponível");
+      const takeId = String(take?.id || "");
+      if (!takeId) throw new Error("Take inválido.");
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 45000);
+      const response = await fetch(`/api/takes/${takeId}/download`, {
+        credentials: "include",
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeout);
+      if (!response.ok) {
+        throw new Error(`Falha ao baixar take (${response.status})`);
+      }
+      const blob = await response.blob();
+      if (!blob || blob.size <= 0) {
+        throw new Error("Arquivo vazio ou indisponível.");
+      }
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = take?.fileName || `take_${take.characterName}_${take.lineIndex}.wav`;
-      a.target = "_blank";
-      a.rel = "noopener";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
     } catch (err) {
       toast({ title: "Erro ao baixar take", description: String((err as any)?.message || err), variant: "destructive" });
       throw err;
@@ -2298,6 +2336,8 @@ export default function RecordingRoom() {
                           onClick={async () => {
                             const audio = recordingsPreviewAudioRef.current;
                             if (!audio) return;
+                            const takeId = String(take?.id || "");
+                            if (!takeId) return;
                             if (recordingsPreviewId === take.id && !audio.paused) {
                               audio.pause();
                               setRecordingsPreviewId(null);
@@ -2305,13 +2345,23 @@ export default function RecordingRoom() {
                               return;
                             }
                             try {
-                              const takeId = String(take?.id || "");
                               setRecordingAvailability((prev) => ({ ...prev, [takeId]: "loading" }));
-                              const streamUrl = await resolveTakePlayableUrl(take);
-                              audio.src = streamUrl;
+                              const streamUrl = getTakeStreamUrl(take);
+                              const immediateUrl = recordingPlayableUrls[takeId] || streamUrl;
+                              audio.src = immediateUrl;
                               await audio.play();
                               setRecordingsPreviewId(take.id);
                               setRecordingsPlayerOpenId(take.id);
+                              setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
+                              if (!recordingPlayableUrls[takeId]) {
+                                void resolveTakePlayableUrl(take, { prefetch: true })
+                                  .then((resolvedUrl) => {
+                                    if (recordingsPreviewAudioRef.current && recordingsPreviewId === take.id) {
+                                      recordingsPreviewAudioRef.current.src = resolvedUrl;
+                                    }
+                                  })
+                                  .catch(() => {});
+                              }
                             } catch (err) {
                               setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "error" }));
                               toast({ title: "Erro ao reproduzir take", description: String((err as any)?.message || err), variant: "destructive" });
@@ -2605,14 +2655,6 @@ export default function RecordingRoom() {
               >
                 <Monitor className="w-4 h-4" />
               </button>
-              <button
-                onClick={() => setIsCustomizing(true)}
-                className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="Atalhos de teclado"
-                data-testid="button-open-shortcuts"
-              >
-                <Settings className="w-4 h-4" />
-              </button>
               {canAccessDashboard && (
                 <Link href={`/hub-dub/studio/${studioId}/dashboard`}>
                   <button
@@ -2625,6 +2667,35 @@ export default function RecordingRoom() {
                   </button>
                 </Link>
               )}
+              <div className="relative">
+                <button
+                  onClick={() => setDailyMeetOpen((prev) => !prev)}
+                  className={cn(
+                    "w-9 h-9 flex items-center justify-center rounded-xl transition-colors",
+                    dailyMeetOpen
+                      ? "bg-primary/20 text-primary border border-primary/30"
+                      : "bg-white/5 text-muted-foreground hover:text-foreground"
+                  )}
+                  aria-label="Popup de voz e vídeo"
+                  data-testid="button-room-voice-video-popup"
+                >
+                  <Video className="w-4 h-4" />
+                </button>
+                <DailyMeetPanel
+                  sessionId={sessionId}
+                  zIndexBase={UI_LAYER_BASE.chatPanel}
+                  open={dailyMeetOpen}
+                  onOpenChange={setDailyMeetOpen}
+                />
+              </div>
+              <button
+                onClick={() => setIsCustomizing(true)}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Atalhos de teclado"
+                data-testid="button-open-shortcuts"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
             </>
           )}
         </div>
@@ -2636,9 +2707,11 @@ export default function RecordingRoom() {
           isMobile ? "grid-cols-1" : "lg:grid-cols-[1fr_400px]"
         )}>
           {/* Coluna Principal: Video + Texto Sincronizado */}
-          <div className="flex flex-col min-h-0 relative bg-black/40">
-            {/* Video Player Area */}
-            <div className="flex-1 relative overflow-hidden bg-black flex items-center justify-center">
+          <div ref={desktopVideoTextContainerRef} className="flex flex-col min-h-0 relative bg-black/40">
+            <div
+              className="relative overflow-hidden bg-black flex items-center justify-center min-h-[220px]"
+              style={isMobile ? { flex: 1 } : { height: `${desktopVideoTextSplit}%` }}
+            >
               {production?.videoUrl ? (
                 <video
                   ref={videoRef}
@@ -2712,8 +2785,19 @@ export default function RecordingRoom() {
               )}
             </div>
 
-            {/* Texto Sincronizado (Fora do Video) */}
-            <div className="bg-zinc-950 border-t border-white/5 px-6 py-6 sm:px-10 sm:py-8 min-h-[140px] flex flex-col justify-center transition-all">
+            {!isMobile && (
+              <button
+                onPointerDown={() => setIsDraggingVideoTextSplit(true)}
+                className="h-2 w-full cursor-row-resize bg-zinc-800/80 hover:bg-primary/50 transition-colors"
+                aria-label="Redimensionar vídeo e texto"
+                data-testid="video-text-resizer"
+              />
+            )}
+
+            <div
+              className="bg-zinc-950 border-t border-white/5 px-6 py-6 sm:px-10 sm:py-8 min-h-[180px] flex flex-col justify-center transition-all overflow-hidden"
+              style={isMobile ? undefined : { height: `${100 - desktopVideoTextSplit}%` }}
+            >
               {currentScriptLine ? (
                 <div className="max-w-4xl mx-auto w-full">
                   <div className="flex items-center gap-3 mb-3">
@@ -2724,7 +2808,10 @@ export default function RecordingRoom() {
                       {currentScriptLine.character}
                     </span>
                   </div>
-                  <p className="text-white text-xl sm:text-2xl md:text-3xl font-medium leading-tight tracking-tight">
+                  <p className={cn(
+                    "text-white font-semibold leading-tight tracking-tight",
+                    isMobile ? "text-2xl sm:text-3xl" : "text-3xl md:text-5xl lg:text-6xl"
+                  )}>
                     {currentScriptLine.text}
                   </p>
                 </div>
@@ -3146,7 +3233,6 @@ export default function RecordingRoom() {
         )}
       </AnimatePresence>
 
-      <DailyMeetPanel sessionId={sessionId} zIndexBase={UI_LAYER_BASE.chatPanel} />
     </div>
   );
 }
