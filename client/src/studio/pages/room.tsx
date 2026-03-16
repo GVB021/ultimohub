@@ -854,6 +854,7 @@ export default function RecordingRoom() {
   const recordingRowAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const [recordingsPreviewId, setRecordingsPreviewId] = useState<string | null>(null);
   const [recordingsPlaybackRate, setRecordingsPlaybackRate] = useState(1);
+  const [recordingsIsLoading, setRecordingsIsLoading] = useState<Set<string>>(new Set());
   const [desktopVideoTextSplit, setDesktopVideoTextSplit] = useState(50);
   const [isDraggingVideoTextSplit, setIsDraggingVideoTextSplit] = useState(false);
 
@@ -978,8 +979,12 @@ export default function RecordingRoom() {
         } catch {}
       });
       cachedRecordingBlobUrlsRef.current = {};
+      
+      // Limpar o cache de mídia do navegador se necessário (opcional, dependendo da política de cache)
+      // caches.delete("vhub_audio_takes_v1");
     };
   }, []);
+
   const isApproverRole = useCallback((role: string | undefined | null) => {
     if (!role) return false;
     return hasUiPermission(resolveUiRole(role, false), "approve_take");
@@ -1888,55 +1893,69 @@ export default function RecordingRoom() {
     if (inMemory) return inMemory;
     const streamUrl = getTakeStreamUrl(take);
     if (!streamUrl) throw new Error("URL de stream indisponível.");
+    
+    setRecordingsIsLoading(prev => {
+      const next = new Set(prev);
+      next.add(takeId);
+      return next;
+    });
     setRecordingAvailability((prev) => ({ ...prev, [takeId]: "loading" }));
 
-    const cacheStorage = typeof window !== "undefined" && "caches" in window ? await caches.open("vhub_audio_takes_v1").catch(() => null) : null;
-    const cacheRequest = new Request(streamUrl, { credentials: "include" });
-    if (cacheStorage) {
-      const cachedResponse = await cacheStorage.match(cacheRequest);
-      if (cachedResponse?.ok) {
-        const blob = await cachedResponse.blob();
+    try {
+      const cacheStorage = typeof window !== "undefined" && "caches" in window ? await caches.open("vhub_audio_takes_v1").catch(() => null) : null;
+      const cacheRequest = new Request(streamUrl, { credentials: "include" });
+      if (cacheStorage) {
+        const cachedResponse = await cacheStorage.match(cacheRequest);
+        if (cachedResponse?.ok) {
+          const blob = await cachedResponse.blob();
+          await validateTakeAudioBlob(take, blob);
+          const objectUrl = URL.createObjectURL(blob);
+          cachedRecordingBlobUrlsRef.current[takeId] = objectUrl;
+          setRecordingPlayableUrls((prev) => ({ ...prev, [takeId]: objectUrl }));
+          setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
+          return objectUrl;
+        }
+      }
+
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), opts?.prefetch ? 15000 : 30000);
+      const startedAt = performance.now();
+      try {
+        const response = await fetch(streamUrl, {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Arquivo inacessível (${response.status})`);
+        }
+        const blob = await response.blob();
         await validateTakeAudioBlob(take, blob);
+        if (cacheStorage) {
+          await cacheStorage.put(cacheRequest, new Response(blob, { headers: { "content-type": blob.type || "audio/wav" } })).catch(() => {});
+        }
         const objectUrl = URL.createObjectURL(blob);
         cachedRecordingBlobUrlsRef.current[takeId] = objectUrl;
         setRecordingPlayableUrls((prev) => ({ ...prev, [takeId]: objectUrl }));
         setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
+        console.info("[Room][Audio] take carregado", {
+          takeId,
+          bytes: blob.size,
+          contentType: blob.type || null,
+          elapsedMs: Math.round(performance.now() - startedAt),
+        });
         return objectUrl;
+      } catch (error: any) {
+        setRecordingAvailability((prev) => ({ ...prev, [takeId]: "error" }));
+        throw new Error(error?.name === "AbortError" ? "Tempo limite ao carregar áudio." : String(error?.message || error));
+      } finally {
+        window.clearTimeout(timeout);
       }
-    }
-
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), opts?.prefetch ? 15000 : 30000);
-    const startedAt = performance.now();
-    try {
-      const response = await fetch(streamUrl, {
-        credentials: "include",
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`Arquivo inacessível (${response.status})`);
-      }
-      const blob = await response.blob();
-      await validateTakeAudioBlob(take, blob);
-      if (cacheStorage) {
-        await cacheStorage.put(cacheRequest, new Response(blob, { headers: { "content-type": blob.type || "audio/wav" } })).catch(() => {});
-      }
-      const objectUrl = URL.createObjectURL(blob);
-      cachedRecordingBlobUrlsRef.current[takeId] = objectUrl;
-      setRecordingPlayableUrls((prev) => ({ ...prev, [takeId]: objectUrl }));
-      setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
-      console.info("[Room][Audio] take carregado", {
-        takeId,
-        bytes: blob.size,
-        contentType: blob.type || null,
-        elapsedMs: Math.round(performance.now() - startedAt),
-      });
-      return objectUrl;
-    } catch (error: any) {
-      setRecordingAvailability((prev) => ({ ...prev, [takeId]: "error" }));
-      throw new Error(error?.name === "AbortError" ? "Tempo limite ao carregar áudio." : String(error?.message || error));
     } finally {
-      window.clearTimeout(timeout);
+      setRecordingsIsLoading(prev => {
+        const next = new Set(prev);
+        next.delete(takeId);
+        return next;
+      });
     }
   }, [getTakeStreamUrl, validateTakeAudioBlob]);
 
@@ -2367,6 +2386,7 @@ export default function RecordingRoom() {
                       </span>
                       <div className="col-span-2 flex items-center justify-end gap-1.5">
                         <button
+                          disabled={recordingsIsLoading.has(String(take.id))}
                           onClick={async () => {
                             const audio = recordingsPreviewAudioRef.current;
                             if (!audio) return;
@@ -2379,33 +2399,39 @@ export default function RecordingRoom() {
                               return;
                             }
                             try {
+                              const immediateUrl = recordingPlayableUrls[takeId];
+                              if (immediateUrl) {
+                                audio.src = immediateUrl;
+                                await audio.play();
+                                setRecordingsPreviewId(take.id);
+                                setRecordingsPlayerOpenId(take.id);
+                                return;
+                              }
+
                               setRecordingAvailability((prev) => ({ ...prev, [takeId]: "loading" }));
-                              const streamUrl = getTakeStreamUrl(take);
-                              const immediateUrl = recordingPlayableUrls[takeId] || streamUrl;
-                              audio.src = immediateUrl;
-                              await audio.play();
-                              setRecordingsPreviewId(take.id);
-                              setRecordingsPlayerOpenId(take.id);
-                              setRecordingAvailability((prev) => ({ ...prev, [takeId]: "available" }));
-                              if (!recordingPlayableUrls[takeId]) {
-                                void resolveTakePlayableUrl(take, { prefetch: true })
-                                  .then((resolvedUrl) => {
-                                    if (recordingsPreviewAudioRef.current && recordingsPreviewId === take.id) {
-                                      recordingsPreviewAudioRef.current.src = resolvedUrl;
-                                    }
-                                  })
-                                  .catch(() => {});
+                              const resolvedUrl = await resolveTakePlayableUrl(take);
+                              if (recordingsPreviewAudioRef.current) {
+                                recordingsPreviewAudioRef.current.src = resolvedUrl;
+                                await recordingsPreviewAudioRef.current.play();
+                                setRecordingsPreviewId(take.id);
+                                setRecordingsPlayerOpenId(take.id);
                               }
                             } catch (err) {
                               setRecordingAvailability((prev) => ({ ...prev, [String(take.id || "")]: "error" }));
                               toast({ title: "Erro ao reproduzir take", description: String((err as any)?.message || err), variant: "destructive" });
                             }
                           }}
-                          className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center"
+                          className="w-7 h-7 rounded-md bg-muted/70 text-foreground hover:bg-muted flex items-center justify-center disabled:opacity-50"
                           title="Reproduzir take"
                           data-testid={`button-play-recording-${take.id}`}
                         >
-                          {recordingsPreviewId === take.id ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+                          {recordingsIsLoading.has(String(take.id)) ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : recordingsPreviewId === take.id ? (
+                            <Pause className="w-3.5 h-3.5" />
+                          ) : (
+                            <Play className="w-3.5 h-3.5 ml-0.5" />
+                          )}
                         </button>
                         <button
                           onClick={async () => {

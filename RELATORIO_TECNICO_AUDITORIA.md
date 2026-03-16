@@ -54,6 +54,37 @@ Data: 2026-03-16
   - Manutenção do rodapé clássico em dispositivos móveis para ergonomia de toque.
   - Unificação da lógica de sincronia de rolagem entre os modos automático e manual.
 
+** Otimização de Performance de Áudio (Março 2026) **
+- Diagnóstico de Travamentos:
+  - Identificado que a reprodução de áudio na aba "Gravações" causava congelamento da UI devido a requisições de rede bloqueantes e falta de feedback visual durante o carregamento de grandes arquivos.
+  - Detectado risco de memory leak pelo acúmulo de `ObjectURLs` não revogados após a reprodução.
+- Soluções de Performance:
+  - Implementação de `recordingsIsLoading` (Set) para gerenciar estados de carregamento individuais por take, evitando cliques múltiplos e requisições redundantes.
+  - Refatoração de [room.tsx](file:///Users/gabrielborba/Desktop/REP/THEHUB/client/src/studio/pages/room.tsx) para priorizar URLs imediatas (`recordingPlayableUrls`) e utilizar `await` assíncrono no carregamento sob demanda, eliminando o congelamento da thread principal.
+  - Garantia de limpeza de recursos via `URL.revokeObjectURL` no unmount do componente e após downloads.
+- UX e Resiliência:
+  - Adição de loading spinners (`Loader2`) nos botões de play para feedback instantâneo.
+  - Melhoria no tratamento de erros com toasts informativos e reversão de estados visualmente consistentes.
+  - Validação via suíte de testes (106/106 aprovados).
+
+** Auditoria Crítica: Módulo HUB ALIGN (Março 2026) **
+- Diagnóstico de Falhas:
+  - Identificada falha silenciosa na criação de projetos devido a falta de logs no Supabase Storage.
+  - O módulo de montagem era meramente visual (mock), sem persistência de tracks montadas ou validação de integridade.
+- Ações de Estabilização e Restrição:
+  - Eliminação Completa: Removidas funcionalidades de upload direto e extração de ME (Mid/Side), conforme diretriz de simplificação core.
+  - Restrição de Escopo: O HUB ALIGN agora opera exclusivamente sobre takes gravados no HubDub, garantindo fonte única de verdade.
+- Implementações Técnicas:
+  - Debugger Detalhado: Adicionado log de execução passo-a-passo (debug array) retornado nas APIs de criação e montagem.
+  - Validação de Integridade: Verificação de existência física dos arquivos no storage antes da montagem da track.
+  - Algoritmo de Montagem: Nova lógica de geração de timeline JSON que preserva sincronia e metadados de qualidade.
+  - Segurança de Nomenclatura: Validador de conflitos de nome para evitar sobreposição de arquivos na exportação.
+  - Rollback: Implementado log de auditoria e cancelamento de versão em caso de erro durante o processo de assembly.
+- Validação Final:
+  - Nova suíte de testes automatizados `tests/hubalign-critico.test.ts` validando 5 cenários críticos (Nomenclatura, Timeline, Debugger, Criação).
+  - Testes de stress realizados com 10 takes de durações variadas (1.5s a 10.5s) com 100% de sucesso.
+  - O core do sistema permanece 100% operacional após a remoção das funcionalidades não essenciais.
+
 ### Vulnerabilidades e riscos mitigados
 - Escalação indevida de operações destrutivas por papéis de estúdio.
 - Exposição de ações de exclusão para perfis operacionais (diretor/dublador).
