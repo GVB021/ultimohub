@@ -851,7 +851,17 @@ export default function RecordingRoom() {
   const [recordingsPreviewId, setRecordingsPreviewId] = useState<string | null>(null);
   const [recordingsPlaybackRate, setRecordingsPlaybackRate] = useState(1);
   const [recordingsIsLoading, setRecordingsIsLoading] = useState<Set<string>>(new Set());
-  const [desktopVideoTextSplit, setDesktopVideoTextSplit] = useState(50);
+  const [desktopVideoTextSplit, setDesktopVideoTextSplit] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("vhub_desktop_video_text_split");
+      // O roteiro não pode ocupar mais de 50% da altura da viewport.
+      // Se scriptHeight = 100 - split, então 100 - split <= 50, logo split >= 50.
+      const val = saved ? Number(saved) : 68;
+      return Math.max(50, Math.min(80, val));
+    } catch {
+      return 68;
+    }
+  });
   const [isDraggingVideoTextSplit, setIsDraggingVideoTextSplit] = useState(false);
 
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
@@ -874,8 +884,8 @@ export default function RecordingRoom() {
     if (maxScroll <= 0 || videoDuration <= 0) return;
 
     // Teleprompter: Rolagem suave contínua baseada no tempo do vídeo e velocidade ajustável
-    console.log(`[Teleprompter] Scrolling to ${scrollPos} with speed ${teleprompterSpeed}`);
     const scrollPos = (videoTime / videoDuration) * maxScroll * teleprompterSpeed;
+    console.log(`[Teleprompter] Scrolling to ${scrollPos} with speed ${teleprompterSpeed}`);
     
     viewport.scrollTo({
       top: scrollPos,
@@ -911,7 +921,11 @@ export default function RecordingRoom() {
       const rect = container.getBoundingClientRect();
       const localY = event.clientY - rect.top;
       const next = (localY / rect.height) * 100;
-      setDesktopVideoTextSplit(Math.max(32, Math.min(68, next)));
+      // Script height = 100 - next. Se scriptHeight <= 50%, então next >= 50%.
+      // Mínimo 20% para o roteiro, logo next <= 80%.
+      const constrained = Math.max(50, Math.min(80, next));
+      setDesktopVideoTextSplit(constrained);
+      localStorage.setItem("vhub_desktop_video_text_split", String(constrained));
     };
     const handlePointerUp = () => setIsDraggingVideoTextSplit(false);
     window.addEventListener("pointermove", handlePointerMove);
@@ -2771,12 +2785,6 @@ export default function RecordingRoom() {
                 >
                   <Video className="w-4 h-4" />
                 </button>
-                <DailyMeetPanel
-                  sessionId={sessionId}
-                  zIndexBase={UI_LAYER_BASE.chatPanel}
-                  open={dailyMeetOpen}
-                  onOpenChange={setDailyMeetOpen}
-                />
               </div>
               <button
                 onClick={() => setIsCustomizing(true)}
@@ -2790,6 +2798,13 @@ export default function RecordingRoom() {
           )}
         </div>
       </header>
+
+      <DailyMeetPanel
+        sessionId={sessionId}
+        zIndexBase={UI_LAYER_BASE.chatPanel}
+        open={dailyMeetOpen}
+        onOpenChange={setDailyMeetOpen}
+      />
 
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <div className={cn(
@@ -2907,12 +2922,25 @@ export default function RecordingRoom() {
             )}
 
             {!isMobile && (
-              <button
+              <div
                 onPointerDown={() => setIsDraggingVideoTextSplit(true)}
-                className="h-2 w-full cursor-row-resize bg-zinc-800/80 hover:bg-primary/50 transition-colors"
-                aria-label="Redimensionar vídeo e texto"
+                className={cn(
+                  "h-2 w-full cursor-row-resize flex items-center justify-center transition-all group z-30 relative",
+                  isDraggingVideoTextSplit ? "bg-primary" : "bg-zinc-800/80 hover:bg-primary/50"
+                )}
+                aria-label="Redimensionar roteiro (máx 50%)"
                 data-testid="video-text-resizer"
-              />
+              >
+                <div className={cn(
+                  "w-12 h-0.5 rounded-full transition-all",
+                  isDraggingVideoTextSplit ? "bg-white" : "bg-zinc-600 group-hover:bg-white"
+                )} />
+                {isDraggingVideoTextSplit && (
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-primary text-white text-[10px] px-2 py-0.5 rounded-full font-bold shadow-lg">
+                    {Math.round(100 - desktopVideoTextSplit)}%
+                  </div>
+                )}
+              </div>
             )}
 
             <div
