@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Settings,
   X,
+  Check,
   Monitor,
   User,
   Users,
@@ -564,6 +565,19 @@ export default function RecordingRoom() {
   const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
   const [teleprompterSpeed, setTeleprompterSpeed] = useState(1);
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
+
+  // Novo sistema de preview de áudio antes do envio
+  const [pendingTake, setPendingTake] = useState<{
+    samples: Float32Array;
+    durationSeconds: number;
+    sampleRate: number;
+    metrics: any;
+    blob: Blob;
+    url: string;
+    lineIndex: number;
+    startTimeSeconds: number;
+  } | null>(null);
+
   const lastTapRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const countdownTimerRef = useRef<number | null>(null);
@@ -864,6 +878,20 @@ export default function RecordingRoom() {
   });
   const [isDraggingVideoTextSplit, setIsDraggingVideoTextSplit] = useState(false);
 
+  const [sideScriptWidth, setSideScriptWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("vhub_side_script_width");
+      const val = saved ? Number(saved) : 400;
+      // Limites: 15% min, 50% max da largura da tela
+      const min = Math.max(300, window.innerWidth * 0.15);
+      const max = window.innerWidth * 0.5;
+      return Math.max(min, Math.min(max, val));
+    } catch {
+      return 400;
+    }
+  });
+  const [isDraggingSideScript, setIsDraggingSideScript] = useState(false);
+
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
   const [recordingAvailability, setRecordingAvailability] = useState<Record<string, RecordingAvailabilityState>>({});
   const [recordingPlayableUrls, setRecordingPlayableUrls] = useState<Record<string, string>>({});
@@ -935,6 +963,26 @@ export default function RecordingRoom() {
       window.removeEventListener("pointerup", handlePointerUp);
     };
   }, [isDraggingVideoTextSplit, isMobile]);
+
+  useEffect(() => {
+    if (!isDraggingSideScript || isMobile) return;
+    const handlePointerMove = (event: PointerEvent) => {
+      // Limites: 15% min, 50% max da largura da tela
+      const min = Math.max(300, window.innerWidth * 0.15);
+      const max = window.innerWidth * 0.5;
+      const nextWidth = window.innerWidth - event.clientX;
+      const constrained = Math.max(min, Math.min(max, nextWidth));
+      setSideScriptWidth(constrained);
+      localStorage.setItem("vhub_side_script_width", String(constrained));
+    };
+    const handlePointerUp = () => setIsDraggingSideScript(false);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isDraggingSideScript, isMobile]);
 
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
   const [presenceUsers, setPresenceUsers] = useState<any[]>([]);
@@ -1574,8 +1622,7 @@ export default function RecordingRoom() {
       logAudioStep("stop-empty-buffer");
       return;
     }
-    setLastRecording(result);
-    setRecordingStatus("recorded");
+    
     if (videoRef.current) {
       videoRef.current.pause();
       emitVideoEvent("pause", { currentTime: videoRef.current.currentTime });
@@ -1590,6 +1637,7 @@ export default function RecordingRoom() {
       noiseFloor: metrics.noiseFloor,
       sampleRate: result.sampleRate,
     });
+    
     if (isLooping && customLoop) {
       const expectedDuration = customLoop.end - Math.max(0, customLoop.start - 3);
       if (result.durationSeconds + 0.15 < expectedDuration) {
@@ -1604,58 +1652,89 @@ export default function RecordingRoom() {
         return;
       }
     }
+
+    // Gerar blob local para preview
+    const wavBuffer = encodeWav(result.samples);
+    const wavBlob = wavToBlob(wavBuffer);
+    const objectUrl = URL.createObjectURL(wavBlob);
+
+    setPendingTake({
+      samples: result.samples,
+      durationSeconds: result.durationSeconds,
+      sampleRate: result.sampleRate,
+      metrics,
+      blob: wavBlob,
+      url: objectUrl,
+      lineIndex: currentLine,
+      startTimeSeconds: Number(videoRef.current?.currentTime || 0),
+    });
+
+    setRecordingStatus("recorded");
+    setLastRecording(result);
+  }, [recordingStatus, micState, emitVideoEvent, logAudioStep, toast, isLooping, customLoop, currentLine]);
+
+  const handleApproveTake = useCallback(async () => {
+    if (!pendingTake) return;
     try {
       setIsSaving(true);
-      const autoApprove = !hasApproverPresent && !isPrivileged;
-      const lineIndex = currentLine;
-      const startTimeSeconds = Number(videoRef.current?.currentTime || 0);
-      const wavBuffer = encodeWav(result.samples);
-      const wavBlob = wavToBlob(wavBuffer);
       const startedAt = performance.now();
       await uploadTakeForDirector({
-        wavBlob,
-        durationSeconds: result.durationSeconds,
-        qualityScore: metrics.score,
+        wavBlob: pendingTake.blob,
+        durationSeconds: pendingTake.durationSeconds,
+        qualityScore: pendingTake.metrics.score,
         autoApprove: true,
-        lineIndex,
-        startTimeSeconds,
+        lineIndex: pendingTake.lineIndex,
+        startTimeSeconds: pendingTake.startTimeSeconds,
       });
       const elapsedMs = performance.now() - startedAt;
       if (elapsedMs > 3000) {
         toast({ title: "Salvamento acima da meta", description: `${Math.round(elapsedMs)}ms`, variant: "destructive" });
       }
       toast({ title: "Take gravado com sucesso" });
-      await logFeatureAudit("room.take.auto_saved", { lineIndex });
+      await logFeatureAudit("room.take.auto_saved", { lineIndex: pendingTake.lineIndex });
+      
+      // Cleanup
+      URL.revokeObjectURL(pendingTake.url);
+      setPendingTake(null);
       setRecordingStatus("idle");
       setLastRecording(null);
       setQualityMetrics(null);
     } catch (err: any) {
       logAudioStep("upload-error", { message: String(err?.message || err) });
       try {
-        const wavBlob = wavToBlob(encodeWav(result.samples));
         await enqueuePendingUpload({
-          dataUrl: await blobToBase64(wavBlob),
+          dataUrl: await blobToBase64(pendingTake.blob),
           characterId: recordingProfile?.characterId || "",
           voiceActorId: user?.id || recordingProfile?.voiceActorId || "",
-          lineIndex: currentLine,
-          durationSeconds: result.durationSeconds,
-          startTimeSeconds: Number(videoRef.current?.currentTime || 0),
-          qualityScore: metrics.score,
+          lineIndex: pendingTake.lineIndex,
+          durationSeconds: pendingTake.durationSeconds,
+          startTimeSeconds: pendingTake.startTimeSeconds,
+          qualityScore: pendingTake.metrics.score,
           isPreferred: !hasApproverPresent && !isPrivileged,
         });
         toast({ title: "Sem conexão. Take salvo no cache local para reenvio automático.", variant: "destructive" });
+        
+        URL.revokeObjectURL(pendingTake.url);
+        setPendingTake(null);
         setRecordingStatus("idle");
         setLastRecording(null);
         setQualityMetrics(null);
       } catch {}
       toast({ title: "Erro ao enviar take", description: String(err?.message || err), variant: "destructive" });
-      setRecordingStatus("idle");
-      setLastRecording(null);
-      setQualityMetrics(null);
     } finally {
       setIsSaving(false);
     }
-  }, [recordingStatus, emitVideoEvent, micState, logAudioStep, toast, uploadTakeForDirector, canApproveTake, hasApproverPresent, isPrivileged, logFeatureAudit, currentLine, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id, isLooping, customLoop]);
+  }, [pendingTake, uploadTakeForDirector, toast, logFeatureAudit, enqueuePendingUpload, blobToBase64, recordingProfile, user?.id, hasApproverPresent, isPrivileged, logAudioStep]);
+
+  const handleRejectTake = useCallback(() => {
+    if (!pendingTake) return;
+    URL.revokeObjectURL(pendingTake.url);
+    setPendingTake(null);
+    setRecordingStatus("idle");
+    setLastRecording(null);
+    setQualityMetrics(null);
+    toast({ title: "Take descartado" });
+  }, [pendingTake, toast]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -2566,7 +2645,19 @@ export default function RecordingRoom() {
         }}
       />
 
-      <header className="shrink-0 flex items-center justify-between px-3 h-12 sm:h-14 relative z-20" style={{ background: "hsl(var(--background) / 0.90)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", borderBottom: "1px solid hsl(var(--border) / 0.9)" }}>
+      <header 
+        className={cn(
+          "shrink-0 flex items-center px-3 h-12 sm:h-14 relative z-20 transition-[grid-template-columns] duration-75",
+          !isMobile ? "grid" : "justify-between"
+        )} 
+        style={{ 
+          background: "hsl(var(--background) / 0.90)", 
+          backdropFilter: "blur(16px)", 
+          WebkitBackdropFilter: "blur(16px)", 
+          borderBottom: "1px solid hsl(var(--border) / 0.9)",
+          gridTemplateColumns: !isMobile ? `1fr ${sideScriptWidth}px` : undefined
+        }}
+      >
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           <div className="flex flex-col min-w-0">
             <span className="font-bold text-xs sm:text-sm truncate text-foreground">{production?.name || "Sessao"}</span>
@@ -2689,7 +2780,10 @@ export default function RecordingRoom() {
           </TooltipProvider>
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-3">
+        <div className={cn(
+          "flex items-center gap-1.5 sm:gap-3",
+          !isMobile && "justify-end px-4 border-l border-white/5"
+        )}>
           {recordingStatus === "recording" && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] font-bold text-red-500 animate-pulse">
               <Circle className="w-2 h-2 fill-current" /> <span className="hidden xs:inline">REC</span>
@@ -2807,10 +2901,13 @@ export default function RecordingRoom() {
       />
 
       <div className="flex-1 flex flex-col overflow-hidden relative">
-        <div className={cn(
-          "flex-1 grid overflow-hidden",
-          isMobile ? "grid-cols-1" : "lg:grid-cols-[1fr_400px]"
-        )}>
+        <div 
+          className={cn(
+            "flex-1 grid overflow-hidden transition-[grid-template-columns] duration-75",
+            isMobile ? "grid-cols-1" : "lg:grid-cols-[1fr_auto]"
+          )}
+          style={isMobile ? undefined : { gridTemplateColumns: `1fr ${sideScriptWidth}px` }}
+        >
           {/* Coluna Principal: Video + Texto Sincronizado */}
           <div ref={desktopVideoTextContainerRef} className="flex flex-col min-h-0 relative bg-black/40">
             <div
@@ -2972,7 +3069,27 @@ export default function RecordingRoom() {
 
           {/* Coluna do Roteiro (Opcional/Lateral no Desktop) */}
           {!isMobile && (
-            <div className="flex flex-col min-h-0 bg-background/40 border-l border-border/60">
+            <div className="flex flex-col min-h-0 bg-background/40 border-l border-border/60 relative group/side">
+              {/* Handle de redimensionamento horizontal */}
+              <div
+                onPointerDown={() => setIsDraggingSideScript(true)}
+                className={cn(
+                  "absolute top-0 bottom-0 -left-1 w-2 cursor-ew-resize transition-all z-50 flex items-center justify-center",
+                  isDraggingSideScript ? "bg-primary/40" : "hover:bg-primary/20"
+                )}
+                aria-label="Redimensionar largura do roteiro (máx 50%)"
+              >
+                <div className={cn(
+                  "w-0.5 h-8 rounded-full transition-all",
+                  isDraggingSideScript ? "bg-white" : "bg-zinc-600 group-hover/side:bg-white"
+                )} />
+                {isDraggingSideScript && (
+                  <div className="absolute top-1/2 -left-12 -translate-y-1/2 bg-primary text-white text-[10px] px-2 py-0.5 rounded-full font-bold shadow-lg">
+                    {Math.round((sideScriptWidth / window.innerWidth) * 100)}%
+                  </div>
+                )}
+              </div>
+
               <div className="h-11 shrink-0 px-5 flex items-center justify-between border-b border-border/70 bg-muted/30">
                 <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                   Roteiro Completo
@@ -3089,6 +3206,84 @@ export default function RecordingRoom() {
             </div>
           )}
         </div>
+
+        {/* Novo Sistema de Preview de Áudio (Mobile & Desktop) */}
+        <AnimatePresence>
+          {pendingTake && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="fixed inset-x-0 bottom-24 z-[100] px-4 pb-4 flex justify-center pointer-events-none"
+            >
+              <div className="w-full max-w-lg bg-zinc-900/95 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-[0_32px_64px_-16px_rgba(0,0,0,0.6)] p-4 sm:p-6 pointer-events-auto flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+                      <Mic className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Preview da Gravação</h3>
+                      <p className="text-[10px] text-white/40 uppercase tracking-widest font-mono">
+                        {pendingTake.durationSeconds.toFixed(2)}s • {pendingTake.metrics.score}% Qualidade
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleRejectTake}
+                      disabled={isSaving}
+                      className="w-10 h-10 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center hover:bg-red-500/20 transition-all active:scale-90 disabled:opacity-50"
+                      aria-label="Rejeitar take"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={handleApproveTake}
+                      disabled={isSaving}
+                      className="h-10 px-6 rounded-full bg-primary text-primary-foreground font-bold text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
+                    >
+                      {isSaving ? (
+                        <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin rounded-full" />
+                      ) : (
+                        <CheckCircle2 className="w-5 h-5" />
+                      )}
+                      {isSaving ? "Enviando..." : "Aprovar e Enviar"}
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Player de Audio Local */}
+                <div className="bg-black/20 rounded-2xl p-3 border border-white/5 flex items-center gap-4">
+                  <audio 
+                    src={pendingTake.url} 
+                    controls 
+                    className="w-full h-10 accent-primary"
+                    controlsList="nodownload noplaybackrate"
+                  />
+                </div>
+
+                {/* Métricas Rápidas */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-white/5 rounded-xl p-2 text-center">
+                    <p className="text-[9px] text-white/40 uppercase font-bold">Loudness</p>
+                    <p className="text-xs font-mono text-white">{(pendingTake.metrics.loudness * 100).toFixed(0)}%</p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-2 text-center">
+                    <p className="text-[9px] text-white/40 uppercase font-bold">Clipping</p>
+                    <p className={cn("text-xs font-mono", pendingTake.metrics.clipping ? "text-red-400" : "text-green-400")}>
+                      {pendingTake.metrics.clipping ? "SIM" : "NÃO"}
+                    </p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-2 text-center">
+                    <p className="text-[9px] text-white/40 uppercase font-bold">Noise</p>
+                    <p className="text-xs font-mono text-white">{(pendingTake.metrics.noiseFloor * 100).toFixed(0)}%</p>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Rodapé de Controles (Apenas Mobile ou Fallback) */}
         {isMobile && (
