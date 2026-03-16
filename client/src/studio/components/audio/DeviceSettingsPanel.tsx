@@ -37,12 +37,10 @@ export function DeviceSettingsPanel({
     systemAudioConfig: false,
     deviceControl: false,
   });
-  const [isTestingMic, setIsTestingMic] = useState(false);
-  const [isTestingOutput, setIsTestingOutput] = useState(false);
+
   const [meterDb, setMeterDb] = useState(-60);
   const [isMicCapturing, setIsMicCapturing] = useState(false);
   const meterRafRef = useRef<number | null>(null);
-  const testerAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const saveConsent = (next: typeof consent) => {
     setConsent(next);
@@ -174,69 +172,7 @@ export function DeviceSettingsPanel({
     onSettingsChange(next);
   };
 
-  const handleMicTest = async () => {
-    if (!micState?.stream) {
-      toast({ title: "Microfone indisponível", description: "Ative o microfone antes de testar.", variant: "destructive" });
-      return;
-    }
-    const granted = await ensurePermissionAndConsent("microphone");
-    if (!granted) return;
-    setIsTestingMic(true);
-    const recorder = new MediaRecorder(micState.stream);
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
-    };
-    recorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: "audio/webm" });
-      const url = URL.createObjectURL(blob);
-      if (testerAudioRef.current) {
-        testerAudioRef.current.pause();
-      }
-      const audio = new Audio(url);
-      testerAudioRef.current = audio;
-      const sinkCapable = audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
-      if (settings.outputDeviceId && typeof sinkCapable.setSinkId === "function") {
-        await sinkCapable.setSinkId(settings.outputDeviceId).catch(() => {});
-      }
-      audio.play().catch(() => {});
-      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
-      setIsTestingMic(false);
-      toast({ title: "Teste concluído", description: "Reprodução automática iniciada para validar o dispositivo." });
-    };
-    recorder.start();
-    window.setTimeout(() => {
-      if (recorder.state !== "inactive") recorder.stop();
-    }, 5000);
-  };
 
-  const handleOutputTest = async () => {
-    const granted = await ensurePermissionAndConsent("deviceControl");
-    if (!granted) return;
-    setIsTestingOutput(true);
-    const context = new AudioContext({ sampleRate: 48000 });
-    const destination = context.createMediaStreamDestination();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.value = 1000;
-    gain.gain.value = 0.2;
-    oscillator.connect(gain);
-    gain.connect(destination);
-    const audio = new Audio();
-    audio.srcObject = destination.stream;
-    const sinkCapable = audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
-    if (settings.outputDeviceId && typeof sinkCapable.setSinkId === "function") {
-      await sinkCapable.setSinkId(settings.outputDeviceId).catch(() => {});
-    }
-    await audio.play().catch(() => {});
-    oscillator.start();
-    oscillator.stop(context.currentTime + 2);
-    window.setTimeout(async () => {
-      await context.close().catch(() => {});
-      setIsTestingOutput(false);
-    }, 2100);
-  };
 
   const outputLabel = (device: MediaDeviceInfo) => {
     const lower = (device.label || "").toLowerCase();
@@ -313,14 +249,7 @@ export function DeviceSettingsPanel({
                 <span>0dB</span>
               </div>
             </div>
-            <button
-              onClick={() => void handleMicTest()}
-              disabled={isTestingMic || !micState}
-              className="h-9 px-3 rounded-md border border-border bg-background hover:bg-muted text-xs font-medium disabled:opacity-50"
-              title="Grava 5 segundos e reproduz automaticamente para validar o microfone selecionado."
-            >
-              {isTestingMic ? "Testando microfone..." : "Testar Microfone (5s)"}
-            </button>
+
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
@@ -372,14 +301,7 @@ export function DeviceSettingsPanel({
                   })}
                 </SelectContent>
               </Select>
-              <button
-                onClick={() => void handleOutputTest()}
-                disabled={isTestingOutput}
-                className="h-8 px-3 rounded-md border border-border bg-background hover:bg-muted text-xs font-medium disabled:opacity-50"
-                title="Emite tom senoidal de 1kHz por 2 segundos na saída selecionada."
-              >
-                {isTestingOutput ? "Testando saída..." : "Teste de saída (1kHz / 2s)"}
-              </button>
+
             </div>
           </div>
 

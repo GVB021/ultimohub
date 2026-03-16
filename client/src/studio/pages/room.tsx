@@ -21,6 +21,8 @@ import {
   Check,
   Monitor,
   User,
+  Plus,
+  Minus,
   Users,
   Edit3,
   Download,
@@ -33,6 +35,7 @@ import {
   UserCheck,
   MousePointer2,
   Video,
+  ArrowLeft,
 } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@studio/hooks/use-toast";
@@ -461,7 +464,7 @@ function CountdownOverlay({ count }: { count: number }) {
         initial={{ scale: 0.5, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 1.5, opacity: 0 }}
-        className="text-[120px] font-black text-primary drop-shadow-[0_0_30px_rgba(var(--primary),0.5)]"
+        className="text-9xl font-bold text-red-500 drop-shadow-[0_0_20px_rgba(255,0,0,0.5)]"
       >
         {count}
       </motion.div>
@@ -565,8 +568,6 @@ export default function RecordingRoom() {
   const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
   const [teleprompterSpeed, setTeleprompterSpeed] = useState(1);
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
-
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   // Novo sistema de preview de áudio antes do envio
   const [pendingTake, setPendingTake] = useState<{
@@ -897,23 +898,12 @@ export default function RecordingRoom() {
   const [scriptFontSize, setScriptFontSize] = useState<number>(() => {
     try {
       const saved = localStorage.getItem("vhub_script_font_size");
-      return saved ? Number(saved) : 15;
+      const val = saved ? Number(saved) : 16;
+      return Math.max(12, Math.min(24, val));
     } catch {
-      return 15;
+      return 16;
     }
   });
-
-  const dynamicFontSize = useMemo(() => {
-    if (isMobile) return scriptFontSize;
-    // Se desktopVideoTextSplit aumenta (vídeo ocupa mais espaço), o roteiro diminui.
-    // desktopVideoTextSplit vai de 50 a 80.
-    // Quando desktopVideoTextSplit é 80 (vídeo grande), queremos fonte menor.
-    // Quando desktopVideoTextSplit é 50 (vídeo metade), queremos fonte normal.
-    const ratio = (80 - desktopVideoTextSplit) / 30; // 1.0 (em 50) para 0.0 (em 80)
-    const minSize = 12;
-    const calculated = minSize + (scriptFontSize - minSize) * ratio;
-    return Math.max(minSize, calculated);
-  }, [desktopVideoTextSplit, scriptFontSize, isMobile]);
 
   const [optimisticRemovingTakeIds, setOptimisticRemovingTakeIds] = useState<Set<string>>(new Set());
   const [recordingAvailability, setRecordingAvailability] = useState<Record<string, RecordingAvailabilityState>>({});
@@ -1006,6 +996,15 @@ export default function RecordingRoom() {
       window.removeEventListener("pointerup", handlePointerUp);
     };
   }, [isDraggingSideScript, isMobile]);
+
+  const changeScriptFontSize = (delta: number) => {
+    setScriptFontSize(prev => {
+      const next = prev + delta;
+      const constrained = Math.max(12, Math.min(24, next));
+      localStorage.setItem("vhub_script_font_size", String(constrained));
+      return constrained;
+    });
+  };
 
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
   const [presenceUsers, setPresenceUsers] = useState<any[]>([]);
@@ -1174,20 +1173,7 @@ export default function RecordingRoom() {
         const ids = Array.isArray(msg.targetUserIds) ? msg.targetUserIds : msg.controllerUserIds;
         setTextControllerUserIds(new Set(ids || []));
       } else if (msg.type === "presence:update" || msg.type === "presence-sync") {
-        const prevCount = presenceUsers.length;
-        const newCount = (msg.users || []).length;
-        if (newCount > prevCount) {
-          const newUser = msg.users.find((u: any) => !presenceUsers.some((p: any) => p.userId === u.userId));
-          if (newUser && newUser.userId !== user?.id) {
-            toast({ title: `${newUser.name || "Alguém"} entrou na sala`, description: "Acompanhe as gravações em conjunto.", variant: "default" });
-          }
-        } else if (newCount < prevCount) {
-          const leftUser = presenceUsers.find((p: any) => !msg.users.some((u: any) => u.userId === p.userId));
-          if (leftUser && leftUser.userId !== user?.id) {
-            toast({ title: `${leftUser.name || "Alguém"} saiu da sala`, variant: "default" });
-          }
-        }
-        setPresenceUsers(msg.users || []);
+        setPresenceUsers(msg.users);
       } else if (msg.type === "video:take-status") {
         if (String(msg.targetUserId || "") !== String(user?.id || "")) return;
         if (msg.status === "deleted") {
@@ -1689,20 +1675,6 @@ export default function RecordingRoom() {
       }
     }
 
-    // Validação de duração mínima de 3 segundos
-    if (result.durationSeconds < 3) {
-      toast({
-        title: "Gravação muito curta",
-        description: "A duração mínima permitida é de 3 segundos.",
-        variant: "destructive",
-      });
-      setRecordingStatus("idle");
-      setLastRecording(null);
-      setQualityMetrics(null);
-      logAudioStep("stop-too-short", { duration: result.durationSeconds });
-      return;
-    }
-
     // Gerar blob local para preview
     const wavBuffer = encodeWav(result.samples);
     const wavBlob = wavToBlob(wavBuffer);
@@ -1727,18 +1699,7 @@ export default function RecordingRoom() {
     if (!pendingTake) return;
     try {
       setIsSaving(true);
-      setUploadProgress(10); // Simular progresso inicial
-
       const startedAt = performance.now();
-      
-      // Simular upload progressivo visual enquanto o upload real acontece
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          if (prev === null || prev >= 90) return prev;
-          return prev + 5;
-        });
-      }, 100);
-
       await uploadTakeForDirector({
         wavBlob: pendingTake.blob,
         durationSeconds: pendingTake.durationSeconds,
@@ -1747,30 +1708,20 @@ export default function RecordingRoom() {
         lineIndex: pendingTake.lineIndex,
         startTimeSeconds: pendingTake.startTimeSeconds,
       });
-
-      clearInterval(progressInterval);
-      setUploadProgress(100);
-
       const elapsedMs = performance.now() - startedAt;
       if (elapsedMs > 3000) {
         toast({ title: "Salvamento acima da meta", description: `${Math.round(elapsedMs)}ms`, variant: "destructive" });
       }
-      
       toast({ title: "Take gravado com sucesso" });
       await logFeatureAudit("room.take.auto_saved", { lineIndex: pendingTake.lineIndex });
       
-      // Pequeno delay para mostrar o 100% antes de fechar
-      setTimeout(() => {
-        URL.revokeObjectURL(pendingTake.url);
-        setPendingTake(null);
-        setRecordingStatus("idle");
-        setLastRecording(null);
-        setQualityMetrics(null);
-        setUploadProgress(null);
-      }, 500);
-
+      // Cleanup
+      URL.revokeObjectURL(pendingTake.url);
+      setPendingTake(null);
+      setRecordingStatus("idle");
+      setLastRecording(null);
+      setQualityMetrics(null);
     } catch (err: any) {
-      setUploadProgress(null);
       logAudioStep("upload-error", { message: String(err?.message || err) });
       try {
         await enqueuePendingUpload({
@@ -2512,7 +2463,7 @@ export default function RecordingRoom() {
               <div className="grid grid-cols-12 text-[10px] uppercase text-muted-foreground tracking-wider pb-2 border-b border-border/60">
                 <span className="col-span-2">Linha</span>
                 <span className="col-span-3">Personagem</span>
-                <span className="col-span-2">Versão</span>
+                <span className="col-span-2">Dublador</span>
                 <span className="col-span-2">Status</span>
                 <span className="col-span-1 text-right">Duração</span>
                 <span className="col-span-2 text-right">Ações</span>
@@ -2529,7 +2480,7 @@ export default function RecordingRoom() {
                     <div className="grid grid-cols-12 items-center text-xs">
                       <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
                       <span className="col-span-3 truncate">{take.characterName || "-"}</span>
-                      <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
+                      <span className="col-span-2 font-mono">{take.voiceActorName || "N/A"}</span>
                       <span className={cn("col-span-2 flex items-center gap-1.5", "text-emerald-500")}>
                         <span>Salvo</span>
                         <span className={cn(
@@ -2732,10 +2683,10 @@ export default function RecordingRoom() {
 
       <header 
         className={cn(
-          "shrink-0 flex items-center px-3 h-12 sm:h-14 relative z-20 transition-[grid-template-columns] duration-75",
+          "shrink-0 flex items-center px-4 h-16 relative z-20 transition-[grid-template-columns] duration-75",
           !isMobile ? "grid" : "justify-between"
         )} 
-        style={{ 
+        style={{
           background: "hsl(var(--background) / 0.90)", 
           backdropFilter: "blur(16px)", 
           WebkitBackdropFilter: "blur(16px)", 
@@ -2743,7 +2694,18 @@ export default function RecordingRoom() {
           gridTemplateColumns: !isMobile ? `1fr ${sideScriptWidth}px` : undefined
         }}
       >
-        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <button 
+            onClick={() => {
+              if (recordingStatus === 'recording' && !window.confirm('Você tem uma gravação em andamento. Deseja realmente sair?')) {
+                return;
+              }
+              window.location.href = '/dashboard';
+            }}
+            className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
           <div className="flex flex-col min-w-0">
             <span className="font-bold text-xs sm:text-sm truncate text-foreground">{production?.name || "Sessao"}</span>
             <span className="text-[10px] text-muted-foreground truncate">{session?.title}</span>
@@ -2866,41 +2828,20 @@ export default function RecordingRoom() {
         </div>
 
         <div className={cn(
-          "flex items-center gap-1.5 sm:gap-3",
+          "flex items-center gap-2",
           !isMobile && "justify-end px-4 border-l border-white/5"
-        )}>
-          {recordingStatus === "recording" && (
+        )}>          {recordingStatus === "recording" && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] font-bold text-red-500 animate-pulse">
               <Circle className="w-2 h-2 fill-current" /> <span className="hidden xs:inline">REC</span>
             </div>
           )}
           {canViewOnlineUsers && !isMobile && (
-            <div className="flex -space-x-2 mr-2">
-              {onlineRosterForCurrentRole.slice(0, 3).map((u: any, idx) => (
-                <div 
-                  key={u.userId || idx}
-                  className={cn(
-                    "w-7 h-7 rounded-full border-2 border-background bg-zinc-800 flex items-center justify-center text-[10px] font-bold uppercase relative group",
-                    u.status === "busy" ? "ring-1 ring-amber-500/50" : "ring-1 ring-emerald-500/50"
-                  )}
-                  title={`${u.name || "Usuário"} (${u.status || "online"})`}
-                >
-                  {u.avatar ? (
-                    <img src={u.avatar} alt="" className="w-full h-full rounded-full object-cover" />
-                  ) : (
-                    <span>{(u.name || "U").charAt(0)}</span>
-                  )}
-                  <div className={cn(
-                    "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-background",
-                    u.status === "busy" ? "bg-amber-500" : "bg-emerald-500"
-                  )} />
-                </div>
-              ))}
-              {onlineRosterForCurrentRole.length > 3 && (
-                <div className="w-7 h-7 rounded-full border-2 border-background bg-zinc-700 flex items-center justify-center text-[10px] font-bold text-white/70">
-                  +{onlineRosterForCurrentRole.length - 3}
-                </div>
-              )}
+            <div
+              className="h-7 px-2 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-400 flex items-center gap-1.5"
+              title={onlineRosterForCurrentRole.map((presence: any) => presence.name || presence.userId).join(", ")}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>{onlineRosterForCurrentRole.length} online</span>
             </div>
           )}
           
@@ -3145,65 +3086,7 @@ export default function RecordingRoom() {
               </div>
             )}
 
-            <div
-              className="bg-zinc-950 border-t border-white/5 px-6 py-6 sm:px-10 sm:py-8 min-h-[180px] flex flex-col justify-center transition-all overflow-hidden relative group/footer"
-              style={isMobile ? undefined : { height: `${100 - desktopVideoTextSplit}%` }}
-            >
-              {/* Controles de Tamanho de Fonte Manuais */}
-              {!isMobile && (
-                <div className="absolute top-4 right-4 flex items-center gap-2 opacity-0 group-hover/footer:opacity-100 transition-opacity z-50">
-                  <button
-                    onClick={() => {
-                      const next = Math.max(10, scriptFontSize - 1);
-                      setScriptFontSize(next);
-                      localStorage.setItem("vhub_script_font_size", String(next));
-                    }}
-                    className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white border border-white/10"
-                    title="Diminuir fonte"
-                  >
-                    <span className="text-xs font-bold">-</span>
-                  </button>
-                  <div className="px-2 py-1 bg-white/5 rounded-lg border border-white/10 text-[10px] font-mono text-white/50">
-                    {Math.round(dynamicFontSize)}px
-                  </div>
-                  <button
-                    onClick={() => {
-                      const next = Math.min(24, scriptFontSize + 1);
-                      setScriptFontSize(next);
-                      localStorage.setItem("vhub_script_font_size", String(next));
-                    }}
-                    className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/50 hover:text-white border border-white/10"
-                    title="Aumentar fonte"
-                  >
-                    <span className="text-xs font-bold">+</span>
-                  </button>
-                </div>
-              )}
 
-              {currentScriptLine ? (
-                <div className="max-w-4xl mx-auto w-full">
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className="text-[10px] sm:text-xs font-mono text-blue-300/90 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
-                      {formatLiveTimecode(currentScriptLine.start)}
-                    </span>
-                    <span className="text-xs sm:text-sm font-bold text-blue-300 uppercase tracking-widest">
-                      {currentScriptLine.character}
-                    </span>
-                  </div>
-                  <p 
-                    className={cn(
-                      "text-white font-semibold leading-tight tracking-tight",
-                      isMobile ? "text-2xl sm:text-3xl" : ""
-                    )}
-                    style={!isMobile ? { fontSize: `${dynamicFontSize}px` } : undefined}
-                  >
-                    {currentScriptLine.text}
-                  </p>
-                </div>
-              ) : (
-                <div className="text-center text-white/10 italic text-sm">Aguardando fala do roteiro...</div>
-              )}
-            </div>
           </div>
 
           {/* Coluna do Roteiro (Opcional/Lateral no Desktop) */}
@@ -3229,17 +3112,23 @@ export default function RecordingRoom() {
                 )}
               </div>
 
-              <div className="h-11 shrink-0 px-5 flex items-center justify-between border-b border-border/70 bg-muted/30">
+              <div className="h-11 shrink-0 px-4 flex items-center justify-between border-b border-border/70 bg-muted/30">
                 <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                   Roteiro Completo
                 </span>
-                <span className="text-xs text-muted-foreground">
-                  <span className="font-mono text-foreground">{displayedScriptLines.length}</span> / {scriptLines.length}
-                </span>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => changeScriptFontSize(-1)} disabled={scriptFontSize <= 12} className="w-7 h-7 rounded-md flex items-center justify-center bg-white/5 text-white/60 hover:bg-white/10 disabled:opacity-50 transition-all">
+                    <Minus className="w-4 h-4" />
+                  </button>
+                  <span className="text-xs font-mono w-6 text-center text-white/50">{scriptFontSize}</span>
+                  <button onClick={() => changeScriptFontSize(1)} disabled={scriptFontSize >= 24} className="w-7 h-7 rounded-md flex items-center justify-center bg-white/5 text-white/60 hover:bg-white/10 disabled:opacity-50 transition-all">
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
               <div
                 ref={scriptViewportRef}
-                className="flex-1 overflow-y-auto py-3 px-4 min-h-0 relative custom-scrollbar"
+                className="flex-1 overflow-y-auto p-4 min-h-0 relative custom-scrollbar"
                 onScrollCapture={() => {
                   scrollSyncCurrentRef.current = scriptViewportRef.current?.scrollTop || 0;
                 }}
@@ -3255,7 +3144,7 @@ export default function RecordingRoom() {
                       ref={(el) => { lineRefs.current[i] = el; }}
                       onClick={canTextControl ? (() => handleLineClick(i)) : undefined}
                       className={cn(
-                        "mb-3 px-5 py-4 rounded-xl transition-all duration-300 relative overflow-hidden",
+                        "mb-4 px-5 py-4 rounded-xl transition-all duration-300 relative overflow-hidden",
                         isActive ? "bg-background/85 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.22)] backdrop-blur-md" : "bg-transparent",
                         isInLoop && "shadow-[inset_0_0_0_1px_rgba(129,140,248,0.45)] bg-indigo-500/10",
                         canTextControl ? "cursor-pointer" : "cursor-default"
@@ -3268,7 +3157,10 @@ export default function RecordingRoom() {
                         </span>
                         {isDone && <CheckCircle2 className="w-4 h-4 ml-auto text-emerald-500" />}
                       </div>
-                      <p className={cn("text-[15px] leading-relaxed", isActive ? "text-foreground font-medium" : "text-muted-foreground")}>
+                      <p 
+                        className={cn("leading-relaxed", isActive ? "text-foreground font-medium" : "text-muted-foreground")}
+                        style={{ fontSize: `${scriptFontSize}px` }}
+                      >
                         {line.text}
                       </p>
                       {canTextControl && (
@@ -3380,23 +3272,14 @@ export default function RecordingRoom() {
                     <button
                       onClick={handleApproveTake}
                       disabled={isSaving}
-                      className="h-10 px-6 rounded-full bg-primary text-primary-foreground font-bold text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50 relative overflow-hidden"
+                      className="h-10 px-6 rounded-full bg-primary text-primary-foreground font-bold text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
                     >
-                      {uploadProgress !== null && (
-                        <motion.div 
-                          className="absolute inset-0 bg-white/20 origin-left"
-                          initial={{ scaleX: 0 }}
-                          animate={{ scaleX: uploadProgress / 100 }}
-                        />
+                      {isSaving ? (
+                        <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin rounded-full" />
+                      ) : (
+                        <CheckCircle2 className="w-5 h-5" />
                       )}
-                      <span className="relative z-10 flex items-center gap-2">
-                        {isSaving ? (
-                          <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground animate-spin rounded-full" />
-                        ) : (
-                          <CheckCircle2 className="w-5 h-5" />
-                        )}
-                        {isSaving ? `Enviando ${uploadProgress}%` : "Aprovar e Enviar"}
-                      </span>
+                      {isSaving ? "Enviando..." : "Aprovar e Enviar"}
                     </button>
                   </div>
                 </div>

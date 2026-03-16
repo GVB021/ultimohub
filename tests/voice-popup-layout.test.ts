@@ -15,12 +15,7 @@ test("popup de voz e vídeo fica acessível e é montado fora do header", () => 
   assert.match(room, /<DailyMeetPanel[\s\S]*open=\{dailyMeetOpen\}[\s\S]*onOpenChange=\{setDailyMeetOpen\}/);
 });
 
-test("layout principal desktop usa split para vídeo e roteiro", () => {
-  const room = readFileSync(roomPath, "utf8");
-  assert.match(room, /const \[desktopVideoTextSplit, setDesktopVideoTextSplit\] = useState/);
-  assert.match(room, /data-testid="video-text-resizer"/);
-  assert.match(room, /style=\{isMobile \? undefined : \{ height: `\$\{100 - desktopVideoTextSplit\}%` \}\}/);
-});
+
 
 test("DailyMeetPanel agora é um rodapé fixo com suporte a minimizar", () => {
   const dailyPanel = readFileSync(dailyPanelPath, "utf8");
@@ -29,7 +24,4 @@ test("DailyMeetPanel agora é um rodapé fixo com suporte a minimizar", () => {
   assert.match(dailyPanel, /isMinimized \? "Chat Ativo" : "Voice & Video Chat"/);
 });
 
-test("texto sincronizado foi ampliado para legibilidade no desktop", () => {
-  const room = readFileSync(roomPath, "utf8");
-  assert.match(room, /isMobile \? "text-2xl sm:text-3xl" : "text-3xl md:text-5xl lg:text-6xl"/);
-});
+
