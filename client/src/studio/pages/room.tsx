@@ -547,7 +547,6 @@ export default function RecordingRoom() {
   const [showProfilePanel, setShowProfilePanel] = useState(false);
 
   const [volumeOverlay, setVolumeOverlay] = useState<number | null>(null);
-  const [speedOverlay, setSpeedOverlay] = useState<number | null>(null);
   const [charSelectorOpen, setCharSelectorOpen] = useState(false);
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
   const [recordingsOpen, setRecordingsOpen] = useState(false);
@@ -598,10 +597,7 @@ export default function RecordingRoom() {
       // Double tap - Cycle playback speed
       const video = videoRef.current;
       if (video) {
-        const nextSpeed = video.playbackRate >= 2 ? 1 : video.playbackRate + 0.25;
-        video.playbackRate = nextSpeed;
-        setSpeedOverlay(nextSpeed);
-        setTimeout(() => setSpeedOverlay(null), 1000);
+        video.playbackRate = 1;
       }
     }
     lastTapRef.current = now;
@@ -878,6 +874,7 @@ export default function RecordingRoom() {
     if (maxScroll <= 0 || videoDuration <= 0) return;
 
     // Teleprompter: Rolagem suave contínua baseada no tempo do vídeo e velocidade ajustável
+    console.log(`[Teleprompter] Scrolling to ${scrollPos} with speed ${teleprompterSpeed}`);
     const scrollPos = (videoTime / videoDuration) * maxScroll * teleprompterSpeed;
     
     viewport.scrollTo({
@@ -2695,13 +2692,31 @@ export default function RecordingRoom() {
           )}
           
           {isMobile ? (
-            <button
-              onClick={() => setMobileMenuOpen(true)}
-              className="w-11 h-11 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
-              aria-label="Menu principal"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
+            <>
+              <button
+                onClick={() => (recordingStatus === 'recording' ? handleStopRecording() : startCountdown())}
+                className={cn(
+                  'w-14 h-14 flex items-center justify-center rounded-full transition-all',
+                  recordingStatus === 'recording'
+                    ? 'bg-red-500 text-white shadow-lg shadow-red-500/50 animate-pulse'
+                    : 'bg-primary text-primary-foreground'
+                )}
+                aria-label={recordingStatus === 'recording' ? 'Parar Gravação' : 'Iniciar Gravação'}
+              >
+                {recordingStatus === 'recording' ? (
+                  <Square className="w-6 h-6" />
+                ) : (
+                  <Mic className="w-6 h-6" />
+                )}
+              </button>
+              <button
+                onClick={() => setMobileMenuOpen(true)}
+                className="w-11 h-11 flex items-center justify-center rounded-xl bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Menu principal"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -2827,17 +2842,7 @@ export default function RecordingRoom() {
                     <span className="text-xs font-bold font-mono tracking-widest">{volumeOverlay}%</span>
                   </motion.div>
                 )}
-                {speedOverlay !== null && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-2 bg-black/60 backdrop-blur px-4 py-3 rounded-2xl border border-white/10 z-20 pointer-events-none"
-                  >
-                    <Play className="w-6 h-6 text-primary" />
-                    <span className="text-xs font-bold font-mono tracking-widest">{speedOverlay.toFixed(2)}x</span>
-                  </motion.div>
-                )}
+
               </AnimatePresence>
 
               <button
