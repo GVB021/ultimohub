@@ -364,14 +364,14 @@ function UsersSection() {
 
   const changeRoleMut = useMutation({
     mutationFn: ({ id, role }: { id: string; role: string }) =>
-      authFetch(`/api/admin/users/${id}/change-role`, { method: "POST", body: JSON.stringify({ role }) }),
+      authFetch(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify({ role }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/admin/users"] }); qc.invalidateQueries({ queryKey: ["/api/admin/stats"] }); toast({ title: "Papel alterado" }); },
     onError: (e: any) => toast({ title: e.message || "Falha ao alterar papel", variant: "destructive" }),
   });
 
   const changeStatusMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
-      authFetch(`/api/admin/users/${id}/change-status`, { method: "POST", body: JSON.stringify({ status }) }),
+      authFetch(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/admin/users"] }); qc.invalidateQueries({ queryKey: ["/api/admin/stats"] }); qc.invalidateQueries({ queryKey: ["/api/admin/pending-users"] }); toast({ title: "Status alterado" }); },
     onError: (e: any) => toast({ title: e.message || "Falha ao alterar status", variant: "destructive" }),
   });

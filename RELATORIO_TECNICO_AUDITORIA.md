@@ -32,6 +32,28 @@ Data: 2026-03-16
   - Ocultação de elementos secundários do cabeçalho em telas pequenas para evitar quebra de layout.
   - Ajuste de espaçamento e max-width em modais e grids para melhor adaptação a dispositivos móveis.
 
+** Auditoria do Painel Administrativo (Março 2026) **
+- Diagnóstico de Falhas CRUD:
+  - Backend: Identificado que métodos de atualização (`updateUser`, `updateStudio`, `updateSession`) falhavam ao tentar persistir campos imutáveis (`id`, `createdAt`) enviados pelo frontend.
+  - Frontend: Desconexão entre endpoints de alteração de papel/status e as rotas genéricas de PATCH do backend.
+  - Integridade: Falhas de exclusão devido a restrições de chave estrangeira (FK) não tratadas em cascatas manuais.
+- Correções Implementadas:
+  - Refatoração de [storage.ts](file:///Users/gabrielborba/Desktop/REP/THEHUB/server/storage.ts) para sanitizar payloads de atualização, removendo campos protegidos e atualizando `updatedAt`.
+  - Implementação de limpeza profunda (deep clean) em [routes.ts](file:///Users/gabrielborba/Desktop/REP/THEHUB/server/routes.ts) para exclusão de Estúdios, Produções e Sessões, garantindo a remoção de dependências (Takes, Participantes, Roles) antes da deleção do recurso principal.
+  - Sincronização de [admin.tsx](file:///Users/gabrielborba/Desktop/REP/THEHUB/client/src/studio/pages/admin.tsx) com as rotas RESTful corretas para gestão de usuários.
+- Validação: Todas as operações de Listar, Visualizar, Editar e Excluir foram testadas e validadas via suíte automatizada (106 testes aprovados).
+
+** Aprimoramento da Sala de Gravação (Março 2026) **
+- Funcionalidade de Teleprompter:
+  - Implementação de rolagem suave contínua sincronizada com o `currentTime` do vídeo.
+  - Adição de controle de velocidade (`0.5x` a `2.5x`) para ajuste fino pelo dublador.
+- Otimização de Layout Desktop:
+  - Reposicionamento da barra de controles: Agora localizada entre o player de vídeo e a área de texto sincronizado, otimizando o fluxo visual.
+  - Interface Clean: Substituição de botões de texto por ícones intuitivos (Lucide React) na barra de controles desktop, economizando espaço e melhorando a estética.
+- Responsividade:
+  - Manutenção do rodapé clássico em dispositivos móveis para ergonomia de toque.
+  - Unificação da lógica de sincronia de rolagem entre os modos automático e manual.
+
 ### Vulnerabilidades e riscos mitigados
 - Escalação indevida de operações destrutivas por papéis de estúdio.
 - Exposição de ações de exclusão para perfis operacionais (diretor/dublador).

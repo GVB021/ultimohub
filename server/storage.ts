@@ -376,18 +376,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateUser(id: string, data: Partial<User>): Promise<User> {
-    const { id: _id, createdAt: _c, ...rest } = data as any;
-    const [updated] = await db.update(users).set(rest).where(eq(users.id, id)).returning();
+    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = data as any;
+    const [updated] = await db.update(users).set({ ...rest, updatedAt: new Date() }).where(eq(users.id, id)).returning();
     return updated;
   }
 
   async deleteUser(id: string): Promise<void> {
+    // Primeiro removemos as roles e memberships para evitar erros de FK se ON DELETE CASCADE falhar por algum motivo
+    await db.delete(userStudioRoles).where(inArray(userStudioRoles.membershipId, 
+      db.select({ id: studioMemberships.id }).from(studioMemberships).where(eq(studioMemberships.userId, id))
+    ));
+    await db.delete(studioMemberships).where(eq(studioMemberships.userId, id));
     await db.delete(users).where(eq(users.id, id));
   }
 
   async updateStudio(id: string, data: Partial<Studio>): Promise<Studio> {
-    const { id: _id, createdAt: _c, ...rest } = data as any;
-    const [updated] = await db.update(studios).set(rest).where(eq(studios.id, id)).returning();
+    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = data as any;
+    const [updated] = await db.update(studios).set({ ...rest, updatedAt: new Date() }).where(eq(studios.id, id)).returning();
     return updated;
   }
 
@@ -408,7 +413,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateSession(id: string, data: Partial<Pick<Session, "title" | "status" | "scheduledAt" | "durationMinutes">>): Promise<Session> {
-    const [updated] = await db.update(sessions).set(data).where(eq(sessions.id, id)).returning();
+    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = data as any;
+    const [updated] = await db.update(sessions).set({ ...rest, updatedAt: new Date() }).where(eq(sessions.id, id)).returning();
     return updated;
   }
 

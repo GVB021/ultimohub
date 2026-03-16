@@ -9,9 +9,10 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { z } from "zod";
 import { db } from "./db";
-import { eq, and, lt } from "drizzle-orm";
+import { eq, and, lt, inArray } from "drizzle-orm";
 import {
   productions, characters, takes, users, studios, sessions, studioMemberships, userStudioRoles,
+  sessionParticipants,
   type Production, type Session,
   insertProductionSchema, insertCharacterSchema, insertTakeSchema, insertSessionSchema,
 } from "@shared/schema";
@@ -2277,6 +2278,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/admin/studios/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
       const studio = await storage.getStudio(req.params.id);
+      if (!studio) return res.status(404).json({ message: "Estudio nao encontrado" });
+
+      // Limpeza profunda manual para garantir integridade
+      const prodRows = await db.select({ id: productions.id }).from(productions).where(eq(productions.studioId, req.params.id));
+      const prodIds = prodRows.map(p => p.id);
+      
+      if (prodIds.length > 0) {
+        const sessRows = await db.select({ id: sessions.id }).from(sessions).where(inArray(sessions.productionId, prodIds));
+        const sessIds = sessRows.map(s => s.id);
+        
+        if (sessIds.length > 0) {
+          await db.delete(takes).where(inArray(takes.sessionId, sessIds));
+          await db.delete(sessionParticipants).where(inArray(sessionParticipants.sessionId, sessIds));
+          await db.delete(sessions).where(inArray(sessions.id, sessIds));
+        }
+        await db.delete(characters).where(inArray(characters.productionId, prodIds));
+        await db.delete(productions).where(inArray(productions.id, prodIds));
+      }
+
+      await db.delete(userStudioRoles).where(inArray(userStudioRoles.membershipId, 
+        db.select({ id: studioMemberships.id }).from(studioMemberships).where(eq(studioMemberships.studioId, req.params.id))
+      ));
+      await db.delete(studioMemberships).where(eq(studioMemberships.studioId, req.params.id));
+      
       await storage.deleteStudio(req.params.id);
       await logAdminAction(req, "DELETE_STUDIO", `Excluiu estudio ${studio?.name}`);
       res.status(200).json({ ok: true });
@@ -2293,6 +2318,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/admin/productions/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
+      // Remover dependências manuais
+      const sessionRows = await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.productionId, req.params.id));
+      const sessionIds = sessionRows.map(s => s.id);
+      
+      if (sessionIds.length > 0) {
+        await db.delete(takes).where(inArray(takes.sessionId, sessionIds));
+        await db.delete(sessionParticipants).where(inArray(sessionParticipants.sessionId, sessionIds));
+        await db.delete(sessions).where(eq(sessions.productionId, req.params.id));
+      }
+      
+      await db.delete(characters).where(eq(characters.productionId, req.params.id));
       await storage.deleteProduction(req.params.id);
       await logAdminAction(req, "DELETE_PRODUCTION", `Excluiu producao ${req.params.id}`);
       res.status(200).json({ ok: true });
@@ -2303,7 +2339,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.patch("/api/admin/productions/:id", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const [updated] = await db.update(productions).set(req.body).where(eq(productions.id, req.params.id)).returning();
+      const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = req.body || {};
+      const [updated] = await db.update(productions).set({ ...rest, updatedAt: new Date() }).where(eq(productions.id, req.params.id)).returning();
       await logAdminAction(req, "UPDATE_PRODUCTION", `Atualizou producao ${req.params.id}`);
       res.status(200).json(updated);
     } catch (err: any) {
@@ -2377,6 +2414,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const participants = await storage.getSessionParticipants(req.params.id);
       const participantIds = Array.from(new Set((participants as any[]).map((p) => String(p.userId))));
+      
+      // Primeiro remover dependências manuais que podem não estar cobertas por CASCADE ou que precisam de limpeza especial
+      await db.delete(takes).where(eq(takes.sessionId, req.params.id));
+      await db.delete(sessionParticipants).where(eq(sessionParticipants.sessionId, req.params.id));
+      
       await storage.deleteSession(req.params.id);
       const rows = await db.select().from(httpSessions);
       const toDelete = (rows as any[])

@@ -563,6 +563,7 @@ export default function RecordingRoom() {
   const [discardFinalStep, setDiscardFinalStep] = useState(false);
   const [onlySelectedCharacter, setOnlySelectedCharacter] = useState(false);
   const [timecodeFormat, setTimecodeFormat] = useState<TimecodeFormat>("HH:MM:SS");
+  const [teleprompterSpeed, setTeleprompterSpeed] = useState(1);
   const [loopAnchorIndex, setLoopAnchorIndex] = useState<number | null>(null);
   const lastTapRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -864,6 +865,25 @@ export default function RecordingRoom() {
   const [textControlPopupOpen, setTextControlPopupOpen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const controlsTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!scriptAutoFollow || !scriptViewportRef.current || isPlaying === false) return;
+    
+    const viewport = scriptViewportRef.current;
+    const scrollHeight = viewport.scrollHeight;
+    const clientHeight = viewport.clientHeight;
+    const maxScroll = scrollHeight - clientHeight;
+    
+    if (maxScroll <= 0 || videoDuration <= 0) return;
+
+    // Teleprompter: Rolagem suave contínua baseada no tempo do vídeo e velocidade ajustável
+    const scrollPos = (videoTime / videoDuration) * maxScroll * teleprompterSpeed;
+    
+    viewport.scrollTo({
+      top: scrollPos,
+      behavior: "smooth"
+    });
+  }, [videoTime, videoDuration, scriptAutoFollow, teleprompterSpeed, isPlaying]);
 
   useEffect(() => {
     const handleActivity = () => {
@@ -2613,6 +2633,21 @@ export default function RecordingRoom() {
                   <p>{onlySelectedCharacter ? "Mostrar Todos os Personagens" : "Apenas Meu Personagem"}</p>
                 </TooltipContent>
               </Tooltip>
+
+              <div className="flex items-center gap-2 px-3 h-8 rounded-lg bg-white/5 border border-white/10">
+                <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-tighter">Velocidade</span>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.5"
+                  step="0.1"
+                  value={teleprompterSpeed}
+                  onChange={(e) => setTeleprompterSpeed(parseFloat(e.target.value))}
+                  className="w-16 h-1 accent-primary cursor-pointer"
+                  title="Ajustar velocidade do teleprompter"
+                />
+                <span className="text-[10px] font-mono text-primary w-6">{teleprompterSpeed.toFixed(1)}x</span>
+              </div>
             </div>
           </TooltipProvider>
         </div>
@@ -2800,6 +2835,47 @@ export default function RecordingRoom() {
             </div>
 
             {!isMobile && (
+              <div className="shrink-0 h-20 bg-zinc-950/90 border-y border-white/10 flex items-center px-8 gap-6 z-40">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => seek(-2)} className="w-9 h-9 rounded-xl flex items-center justify-center bg-white/5 hover:bg-white/10 border border-white/10 transition-all text-white/70 hover:text-white" title="Recuar 2s">
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                  <button onClick={handlePlayPause} disabled={loopPreparing || loopSilenceActive} className="w-11 h-11 rounded-full flex items-center justify-center bg-primary text-primary-foreground shadow-lg hover:scale-105 active:scale-95 transition-all disabled:opacity-50" title={isPlaying ? "Pausar" : "Reproduzir"}>
+                    {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
+                  </button>
+                  <button onClick={() => seek(2)} className="w-9 h-9 rounded-xl flex items-center justify-center bg-white/5 hover:bg-white/10 border border-white/10 transition-all text-white/70 hover:text-white" title="Avançar 2s">
+                    <RotateCcw className="w-4 h-4" style={{ transform: "scaleX(-1)" }} />
+                  </button>
+                </div>
+                
+                <div className="flex-1 flex flex-col gap-1.5">
+                  <div className="flex justify-between text-[10px] font-mono text-white/30 uppercase tracking-tighter">
+                    <span>{formatLiveTimecode(videoTime)}</span>
+                    <span>{formatLiveTimecode(videoDuration)}</span>
+                  </div>
+                  <div className="relative h-1.5 rounded-full bg-white/10 cursor-pointer overflow-hidden" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); scrub((e.clientX - rect.left) / rect.width); }}>
+                    <div className="absolute top-0 bottom-0 bg-primary transition-all duration-100" style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }} />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button onClick={handleLoopButton} className={cn("w-9 h-9 rounded-xl flex items-center justify-center border transition-all", isLooping ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")} title="Configurar Loop">
+                    <Repeat className="w-4 h-4" />
+                  </button>
+                  {recordingStatus === "idle" || recordingStatus === "recorded" ? (
+                    <button onClick={startCountdown} disabled={!micReady || isSaving} className="w-11 h-11 rounded-full flex items-center justify-center bg-white/10 border border-white/20 text-white hover:bg-white/20 transition-all" title="Gravar">
+                      {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Mic className="w-5 h-5" />}
+                    </button>
+                  ) : (
+                    <button onClick={handleStopRecording} className="w-11 h-11 rounded-full flex items-center justify-center bg-red-500 animate-pulse" title="Parar Gravação">
+                      <Square className="w-5 h-5 text-white fill-white" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!isMobile && (
               <button
                 onPointerDown={() => setIsDraggingVideoTextSplit(true)}
                 className="h-2 w-full cursor-row-resize bg-zinc-800/80 hover:bg-primary/50 transition-colors"
@@ -2955,126 +3031,128 @@ export default function RecordingRoom() {
           )}
         </div>
 
-        {/* Rodapé de Controles (Sempre Visível ou Auto-hide) */}
-        <footer
-          className={cn(
-            "h-24 bg-zinc-950/95 backdrop-blur-xl border-t border-white/10 flex flex-col sm:flex-row items-center px-6 gap-4 sm:gap-8 transition-all duration-300 ease-in-out z-50",
-            !controlsVisible && "translate-y-full opacity-0 pointer-events-none"
-          )}
-          onMouseEnter={() => {
-            setControlsVisible(true);
-            if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-          }}
-        >
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => seek(-2)}
-              className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-white/10"
-              aria-label="Recuar 2 segundos"
-            >
-              <RotateCcw className="w-5 h-5" />
-            </button>
-            <button
-              onClick={handlePlayPause}
-              disabled={loopPreparing || loopSilenceActive}
-              className="w-14 h-14 rounded-full flex items-center justify-center transition-all bg-primary text-primary-foreground shadow-lg hover:scale-105 active:scale-95 disabled:opacity-50"
-              aria-label={isPlaying ? "Pausar" : "Reproduzir"}
-            >
-              {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
-            </button>
-            <button
-              onClick={() => seek(2)}
-              className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-white/10"
-              aria-label="Avançar 2 segundos"
-            >
-              <RotateCcw className="w-5 h-5 flip-horizontal" style={{ transform: "scaleX(-1)" }} />
-            </button>
-          </div>
-
-          <div className="flex-1 w-full flex flex-col gap-2">
-            <div className="flex items-center justify-between text-[11px] font-mono text-white/40 px-1">
-              <span>{formatLiveTimecode(videoTime)}</span>
-              <span>{formatLiveTimecode(videoDuration)}</span>
-            </div>
-            <div
-              className="relative h-2 rounded-full cursor-pointer group bg-white/10 overflow-hidden"
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                scrub((e.clientX - rect.left) / rect.width);
-              }}
-            >
-              <div
-                className="absolute top-0 bottom-0 rounded-full bg-primary transition-all duration-100"
-                style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }}
-              />
-              {customLoop && videoDuration > 0 && (
-                <>
-                  <div
-                    className="absolute top-0 bottom-0 w-[2px] bg-indigo-400 z-10"
-                    style={{ left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%` }}
-                  />
-                  <div
-                    className="absolute top-0 bottom-0 w-[2px] bg-indigo-400 z-10"
-                    style={{ left: `${Math.max(0, Math.min(100, (customLoop.end / videoDuration) * 100))}%` }}
-                  />
-                  <div
-                    className="absolute top-0 bottom-0 bg-indigo-500/20"
-                    style={{
-                      left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%`,
-                      width: `${Math.max(0, Math.min(100, ((customLoop.end - customLoop.start) / videoDuration) * 100))}%`
-                    }}
-                  />
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <button
-              onClick={handleLoopButton}
-              className={cn(
-                "w-12 h-12 rounded-2xl flex items-center justify-center transition-all border",
-                loopSelectionMode !== "idle" || isLooping
-                  ? "bg-indigo-500/20 border-indigo-400/50 text-indigo-300"
-                  : "bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10"
-              )}
-              aria-label="Configurar loop"
-            >
-              <Repeat className="w-5 h-5" />
-            </button>
-
-            {recordingStatus === "idle" || recordingStatus === "recorded" ? (
-              <button
-                onClick={startCountdown}
-                disabled={!micReady || isSaving}
-                className={cn(
-                  "w-14 h-14 rounded-full flex items-center justify-center transition-all border shadow-xl",
-                  isSaving
-                    ? "opacity-50 cursor-not-allowed bg-white/5 border-white/10 text-white/20"
-                    : "bg-white/10 border-white/20 text-white hover:bg-white/20 hover:scale-105 active:scale-95"
-                )}
-              >
-                {isSaving ? <Loader2 className="w-6 h-6 animate-spin" /> : <Mic className="w-6 h-6" />}
-              </button>
-            ) : (
-              <button
-                onClick={handleStopRecording}
-                className="w-14 h-14 rounded-full flex items-center justify-center transition-all bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse hover:scale-105 active:scale-95"
-              >
-                <Square className="w-6 h-6 text-white fill-white" />
-              </button>
+        {/* Rodapé de Controles (Apenas Mobile ou Fallback) */}
+        {isMobile && (
+          <footer
+            className={cn(
+              "h-24 bg-zinc-950/95 backdrop-blur-xl border-t border-white/10 flex flex-col sm:flex-row items-center px-6 gap-4 sm:gap-8 transition-all duration-300 ease-in-out z-50",
+              !controlsVisible && "translate-y-full opacity-0 pointer-events-none"
             )}
-          </div>
+            onMouseEnter={() => {
+              setControlsVisible(true);
+              if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => seek(-2)}
+                className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-white/10"
+                aria-label="Recuar 2 segundos"
+              >
+                <RotateCcw className="w-5 h-5" />
+              </button>
+              <button
+                onClick={handlePlayPause}
+                disabled={loopPreparing || loopSilenceActive}
+                className="w-14 h-14 rounded-full flex items-center justify-center transition-all bg-primary text-primary-foreground shadow-lg hover:scale-105 active:scale-95 disabled:opacity-50"
+                aria-label={isPlaying ? "Pausar" : "Reproduzir"}
+              >
+                {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
+              </button>
+              <button
+                onClick={() => seek(2)}
+                className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-white/10"
+                aria-label="Avançar 2 segundos"
+              >
+                <RotateCcw className="w-5 h-5 flip-horizontal" style={{ transform: "scaleX(-1)" }} />
+              </button>
+            </div>
 
-          {/* Toast de Aprovação Integrado no Rodapé se necessário, ou overlay acima dele */}
-          {recordingStatus === "recorded" && (
-            <div className="absolute bottom-full left-0 right-0 mb-4 px-6 pointer-events-none">
-              <div className="max-w-md mx-auto h-12 rounded-2xl bg-zinc-900 border border-white/10 shadow-2xl flex items-center justify-between px-4 text-xs text-white/90 pointer-events-auto backdrop-blur-xl">
-                <span>Take salvo automaticamente.</span>
+            <div className="flex-1 w-full flex flex-col gap-2">
+              <div className="flex items-center justify-between text-[11px] font-mono text-white/40 px-1">
+                <span>{formatLiveTimecode(videoTime)}</span>
+                <span>{formatLiveTimecode(videoDuration)}</span>
+              </div>
+              <div
+                className="relative h-2 rounded-full cursor-pointer group bg-white/10 overflow-hidden"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  scrub((e.clientX - rect.left) / rect.width);
+                }}
+              >
+                <div
+                  className="absolute top-0 bottom-0 rounded-full bg-primary transition-all duration-100"
+                  style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }}
+                />
+                {customLoop && videoDuration > 0 && (
+                  <>
+                    <div
+                      className="absolute top-0 bottom-0 w-[2px] bg-indigo-400 z-10"
+                      style={{ left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%` }}
+                    />
+                    <div
+                      className="absolute top-0 bottom-0 w-[2px] bg-indigo-400 z-10"
+                      style={{ left: `${Math.max(0, Math.min(100, (customLoop.end / videoDuration) * 100))}%` }}
+                    />
+                    <div
+                      className="absolute top-0 bottom-0 bg-indigo-500/20"
+                      style={{
+                        left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%`,
+                        width: `${Math.max(0, Math.min(100, ((customLoop.end - customLoop.start) / videoDuration) * 100))}%`
+                      }}
+                    />
+                  </>
+                )}
               </div>
             </div>
-          )}
-        </footer>
+
+            <div className="flex items-center gap-4">
+              <button
+                onClick={handleLoopButton}
+                className={cn(
+                  "w-12 h-12 rounded-2xl flex items-center justify-center transition-all border",
+                  loopSelectionMode !== "idle" || isLooping
+                    ? "bg-indigo-500/20 border-indigo-400/50 text-indigo-300"
+                    : "bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10"
+                )}
+                aria-label="Configurar loop"
+              >
+                <Repeat className="w-5 h-5" />
+              </button>
+
+              {recordingStatus === "idle" || recordingStatus === "recorded" ? (
+                <button
+                  onClick={startCountdown}
+                  disabled={!micReady || isSaving}
+                  className={cn(
+                    "w-14 h-14 rounded-full flex items-center justify-center transition-all border shadow-xl",
+                    isSaving
+                      ? "opacity-50 cursor-not-allowed bg-white/5 border-white/10 text-white/20"
+                      : "bg-white/10 border-white/20 text-white hover:bg-white/20 hover:scale-105 active:scale-95"
+                  )}
+                >
+                  {isSaving ? <Loader2 className="w-6 h-6 animate-spin" /> : <Mic className="w-6 h-6" />}
+                </button>
+              ) : (
+                <button
+                  onClick={handleStopRecording}
+                  className="w-14 h-14 rounded-full flex items-center justify-center transition-all bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse hover:scale-105 active:scale-95"
+                >
+                  <Square className="w-6 h-6 text-white fill-white" />
+                </button>
+              )}
+            </div>
+
+            {/* Toast de Aprovação Integrado no Rodapé se necessário, ou overlay acima dele */}
+            {recordingStatus === "recorded" && (
+              <div className="absolute bottom-full left-0 right-0 mb-4 px-6 pointer-events-none">
+                <div className="max-w-md mx-auto h-12 rounded-2xl bg-zinc-900 border border-white/10 shadow-2xl flex items-center justify-between px-4 text-xs text-white/90 pointer-events-auto backdrop-blur-xl">
+                  <span>Take salvo automaticamente.</span>
+                </div>
+              </div>
+            )}
+          </footer>
+        )}
         </div>
 
       <AnimatePresence>
