@@ -28,7 +28,11 @@ import {
   Save,
   Repeat,
   ListMusic,
+  ArrowUpDown,
+  UserCheck,
+  MousePointer2,
 } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@studio/hooks/use-toast";
 import { useAuth } from "@studio/hooks/use-auth";
 import {
@@ -544,8 +548,6 @@ export default function RecordingRoom() {
   const [volumeOverlay, setVolumeOverlay] = useState<number | null>(null);
   const [speedOverlay, setSpeedOverlay] = useState<number | null>(null);
   const [charSelectorOpen, setCharSelectorOpen] = useState(false);
-  const [approvalModalTakeId, setApprovalModalTakeId] = useState<string | null>(null);
-  const [approvalFinalStep, setApprovalFinalStep] = useState(false);
   const [lastUploadedTakeId, setLastUploadedTakeId] = useState<string | null>(null);
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [recordingsScope, setRecordingsScope] = useState<"mine" | "all">("mine");
@@ -757,10 +759,6 @@ export default function RecordingRoom() {
     sortDir: recordingsSortDir,
   });
   const recordingsList = recordingsResponse?.items || [];
-  const approvalTargetTake = useMemo(
-    () => takesList.find((take: any) => String(take.id || "") === String(approvalModalTakeId || "")) || null,
-    [takesList, approvalModalTakeId]
-  );
 
   const savedTakes = useMemo(() => {
     const s = new Set<number>();
@@ -778,17 +776,6 @@ export default function RecordingRoom() {
     });
   }, [hasRecordingsError, recordingsError, toast]);
 
-  const handleApproveTake = useCallback(async (take: any) => {
-    const takeId = take.id;
-    await authFetch(`/api/takes/${takeId}/prefer`, { method: "POST" });
-    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "takes"] });
-    await queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "recordings"] });
-    await logFeatureAudit("room.take.approved", { takeId });
-    toast({ title: "Take aprovado e salvo pelo diretor" });
-    setApprovalModalTakeId(null);
-    setApprovalFinalStep(false);
-  }, [queryClient, sessionId, toast, logFeatureAudit]);
-
   const handleDiscardTake = useCallback(async (take: any) => {
     const takeId = String(take.id);
     const takesQueryKey = ["/api/sessions", sessionId, "takes"] as const;
@@ -804,16 +791,16 @@ export default function RecordingRoom() {
     );
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 260));
-      await authFetch(`/api/takes/${takeId}/discard`, { method: "POST", body: JSON.stringify({ confirm: true }) });
+      await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
       await queryClient.invalidateQueries({ queryKey: takesQueryKey });
       await queryClient.invalidateQueries({ queryKey: recordingsQueryKey, exact: false });
-      await logFeatureAudit("room.take.discarded", { takeId });
-      toast({ title: "Take descartado" });
+      await logFeatureAudit("room.take.deleted", { takeId });
+      toast({ title: "Take excluído permanentemente" });
       setDiscardModalTake(null);
       setDiscardFinalStep(false);
     } catch (error: any) {
       queryClient.setQueryData(takesQueryKey, previousTakes);
-      toast({ title: "Falha ao descartar take", description: error?.message || "Tente novamente", variant: "destructive" });
+      toast({ title: "Falha ao excluir take", description: error?.message || "Tente novamente", variant: "destructive" });
     } finally {
       setOptimisticRemovingTakeIds((prev) => {
         const next = new Set(prev);
@@ -861,6 +848,29 @@ export default function RecordingRoom() {
   const cachedRecordingBlobUrlsRef = useRef<Record<string, string>>({});
 
   const [textControlPopupOpen, setTextControlPopupOpen] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    const handleActivity = () => {
+      setControlsVisible(true);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = setTimeout(() => {
+        setControlsVisible(false);
+      }, 3000);
+    };
+
+    window.addEventListener("mousemove", handleActivity);
+    window.addEventListener("mousedown", handleActivity);
+    window.addEventListener("touchstart", handleActivity);
+    return () => {
+      window.removeEventListener("mousemove", handleActivity);
+      window.removeEventListener("mousedown", handleActivity);
+      window.removeEventListener("touchstart", handleActivity);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
+  }, []);
+
   const [textControllerUserIds, setTextControllerUserIds] = useState<Set<string>>(new Set());
   const [presenceUsers, setPresenceUsers] = useState<any[]>([]);
 
@@ -1023,10 +1033,8 @@ export default function RecordingRoom() {
         setPresenceUsers(msg.users);
       } else if (msg.type === "video:take-status") {
         if (String(msg.targetUserId || "") !== String(user?.id || "")) return;
-        if (msg.status === "approved") {
-          toast({ title: "Seu take foi aprovado" });
-        } else if (msg.status === "discarded") {
-          toast({ title: "Seu take foi descartado", variant: "destructive" });
+        if (msg.status === "deleted") {
+          toast({ title: "Um take seu foi excluído pelo diretor", variant: "destructive" });
         }
       }
     };
@@ -1419,7 +1427,7 @@ export default function RecordingRoom() {
       ...take,
       characterName: recordingProfile.characterName || null,
       voiceActorName: recordingProfile.voiceActorName || user?.displayName || user?.fullName || null,
-      status: input.autoApprove ? "approved" : "pending",
+      status: "approved",
       takeVersion: 1,
       createdAt: take.createdAt || new Date().toISOString(),
     };
@@ -1535,7 +1543,7 @@ export default function RecordingRoom() {
         wavBlob,
         durationSeconds: result.durationSeconds,
         qualityScore: metrics.score,
-        autoApprove,
+        autoApprove: true,
         lineIndex,
         startTimeSeconds,
       });
@@ -1543,12 +1551,8 @@ export default function RecordingRoom() {
       if (elapsedMs > 3000) {
         toast({ title: "Salvamento acima da meta", description: `${Math.round(elapsedMs)}ms`, variant: "destructive" });
       }
-      if (autoApprove) {
-        toast({ title: "Take salvo automaticamente" });
-        await logFeatureAudit("room.take.saved_without_approver", { lineIndex });
-      } else {
-        toast({ title: canApproveTake ? "Take recebido para aprovação" : "Take enviado para aprovação" });
-      }
+      toast({ title: "Take gravado com sucesso" });
+      await logFeatureAudit("room.take.auto_saved", { lineIndex });
       setRecordingStatus("idle");
       setLastRecording(null);
       setQualityMetrics(null);
@@ -2260,8 +2264,8 @@ export default function RecordingRoom() {
                       <span className="col-span-2 font-mono text-muted-foreground">#{take.lineIndex}</span>
                       <span className="col-span-3 truncate">{take.characterName || "-"}</span>
                       <span className="col-span-2 font-mono">v{take.takeVersion || 1}</span>
-                      <span className={cn("col-span-2 flex items-center gap-1.5", take.status === "approved" ? "text-emerald-500" : "text-amber-500")}>
-                        <span>{take.status === "approved" ? "Aprovado" : "Pendente"}</span>
+                      <span className={cn("col-span-2 flex items-center gap-1.5", "text-emerald-500")}>
+                        <span>Salvo</span>
                         <span className={cn(
                           "inline-flex h-1.5 w-1.5 rounded-full",
                           recordingAvailability[String(take.id || "")] === "error"
@@ -2304,7 +2308,7 @@ export default function RecordingRoom() {
                               const takeId = String(take?.id || "");
                               setRecordingAvailability((prev) => ({ ...prev, [takeId]: "loading" }));
                               const streamUrl = await resolveTakePlayableUrl(take);
-                              audio.src = streamUrl || getTakeStreamUrl(take);
+                              audio.src = streamUrl;
                               await audio.play();
                               setRecordingsPreviewId(take.id);
                               setRecordingsPlayerOpenId(take.id);
@@ -2334,30 +2338,16 @@ export default function RecordingRoom() {
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
-                        {(canApproveTake || canDiscardTake) && take.status !== "approved" && (
-                          <>
-                            {canApproveTake && (
-                              <button
-                                onClick={() => setApprovalModalTakeId(take.id)}
-                                className="h-7 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 text-[10px]"
-                                title="Aprovar take"
-                                data-testid={`button-approve-recording-${take.id}`}
-                              >
-                                Aprovar
-                              </button>
-                            )}
-                            {canDiscardTake && (
-                              <button
-                                onClick={() => { setDiscardModalTake(take); setDiscardFinalStep(false); }}
-                                className="h-7 px-2 rounded-md bg-destructive/20 text-destructive hover:bg-destructive/30 text-[10px]"
-                                title="Descartar take"
-                                data-testid={`button-discard-recording-${take.id}`}
-                                disabled={optimisticRemovingTakeIds.has(String(take.id))}
-                              >
-                                Descartar
-                              </button>
-                            )}
-                          </>
+                        {canDiscardTake && (
+                          <button
+                            onClick={() => { setDiscardModalTake(take); setDiscardFinalStep(false); }}
+                            className="h-7 px-2 rounded-md bg-destructive/20 text-destructive hover:bg-destructive/30 text-[10px]"
+                            title="Excluir take"
+                            data-testid={`button-discard-recording-${take.id}`}
+                            disabled={optimisticRemovingTakeIds.has(String(take.id))}
+                          >
+                            Excluir
+                          </button>
                         )}
                       </div>
                     </div>
@@ -2411,11 +2401,11 @@ export default function RecordingRoom() {
       {discardModalTake && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm" style={{ zIndex: UI_LAYER_BASE.confirmationModal }}>
           <div className="w-[calc(100vw-32px)] max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl">
-            <h3 className="text-sm font-bold text-foreground">Confirmação de descarte</h3>
+            <h3 className="text-sm font-bold text-foreground">Excluir take</h3>
             <p className="text-xs text-muted-foreground mt-2">
               {discardFinalStep
-                ? "Confirma definitivamente o descarte lógico deste take? O arquivo permanecerá auditável."
-                : "Primeira etapa: confirmar intenção de descartar este take."}
+                ? "Tem certeza que deseja excluir permanentemente este take? Esta ação não pode ser desfeita."
+                : "Você está prestes a excluir este take da sessão."}
             </p>
             <div className="flex justify-end gap-2 mt-5">
               <button
@@ -2431,47 +2421,14 @@ export default function RecordingRoom() {
                     return;
                   }
                   await handleDiscardTake(discardModalTake);
-                  emitVideoEvent("take-status", { status: "discarded", takeId: discardModalTake.id, targetUserId: discardModalTake.voiceActorId });
+                  emitVideoEvent("take-status", { status: "deleted", takeId: discardModalTake.id, targetUserId: discardModalTake.voiceActorId });
                 }}
                 className={cn(
                   "h-9 px-3 rounded-lg text-white",
                   discardFinalStep ? "bg-destructive hover:bg-destructive/90" : "bg-amber-600 hover:bg-amber-500"
                 )}
               >
-                {discardFinalStep ? "Confirmar descarte" : "Prosseguir"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {approvalModalTakeId && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm" style={{ zIndex: UI_LAYER_BASE.confirmationModal }}>
-          <div className="w-[calc(100vw-32px)] max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl">
-            <h3 className="text-sm font-bold text-foreground">Confirmação de salvamento</h3>
-            <p className="text-xs text-muted-foreground mt-2">
-              {approvalFinalStep ? "Confirma definitivamente o salvamento deste take?" : "Aprovar este take para salvamento definitivo?"}
-            </p>
-            <div className="flex justify-end gap-2 mt-5">
-              <button
-                onClick={() => { setApprovalModalTakeId(null); setApprovalFinalStep(false); }}
-                className="h-9 px-3 rounded-lg bg-muted/70 text-muted-foreground hover:text-foreground"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={async () => {
-                  if (!approvalFinalStep) {
-                    setApprovalFinalStep(true);
-                    return;
-                  }
-                  if (!approvalTargetTake) return;
-                  await handleApproveTake(approvalTargetTake);
-                  emitVideoEvent("take-status", { status: "approved", takeId: approvalTargetTake.id, targetUserId: approvalTargetTake.voiceActorId });
-                }}
-                className="h-9 px-3 rounded-lg bg-primary text-primary-foreground"
-              >
-                {approvalFinalStep ? "Confirmar salvamento" : "Continuar"}
+                {discardFinalStep ? "Excluir permanentemente" : "Prosseguir"}
               </button>
             </div>
           </div>
@@ -2539,6 +2496,61 @@ export default function RecordingRoom() {
               )}
             </AnimatePresence>
           </div>
+
+          <TooltipProvider delayDuration={300}>
+            <div className="flex items-center gap-1.5 ml-2 border-l border-white/10 pl-2">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !scriptAutoFollow;
+                      setScriptAutoFollow(next);
+                      if (next) syncScrollToCurrentVideoTime();
+                      logFeatureAudit("room.scroll.mode_changed", { mode: next ? "automatic" : "manual" });
+                    }}
+                    className={cn(
+                      "w-8 h-8 rounded-lg flex items-center justify-center transition-all border",
+                      scriptAutoFollow
+                        ? "bg-primary/20 border-primary/30 text-primary"
+                        : "bg-white/5 border-white/10 text-muted-foreground hover:text-foreground hover:bg-white/10"
+                    )}
+                  >
+                    <ArrowUpDown className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{scriptAutoFollow ? "Desativar Rolagem Automática" : "Ativar Rolagem Automática"}</p>
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !onlySelectedCharacter;
+                      setOnlySelectedCharacter(next);
+                      logFeatureAudit("room.character_filter.toggled", { enabled: next, character: recordingProfile?.characterName || null });
+                    }}
+                    disabled={!recordingProfile}
+                    className={cn(
+                      "w-8 h-8 rounded-lg flex items-center justify-center transition-all border",
+                      onlySelectedCharacter
+                        ? "bg-primary/20 border-primary/30 text-primary"
+                        : "bg-white/5 border-white/10 text-muted-foreground hover:text-foreground hover:bg-white/10",
+                      !recordingProfile && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    <UserCheck className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{onlySelectedCharacter ? "Mostrar Todos os Personagens" : "Apenas Meu Personagem"}</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </TooltipProvider>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-3">
@@ -2618,12 +2630,14 @@ export default function RecordingRoom() {
         </div>
       </header>
 
-      <div className={cn(
-        "flex-1 grid overflow-hidden",
-        isMobile ? "grid-cols-1" : "grid-cols-2"
-      )}>
-        <div className="flex flex-col min-h-0 relative border-r border-border/60">
-          <div className="flex-1 flex flex-col min-h-0 bg-black/40 relative">
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        <div className={cn(
+          "flex-1 grid overflow-hidden",
+          isMobile ? "grid-cols-1" : "lg:grid-cols-[1fr_400px]"
+        )}>
+          {/* Coluna Principal: Video + Texto Sincronizado */}
+          <div className="flex flex-col min-h-0 relative bg-black/40">
+            {/* Video Player Area */}
             <div className="flex-1 relative overflow-hidden bg-black flex items-center justify-center">
               {production?.videoUrl ? (
                 <video
@@ -2641,11 +2655,11 @@ export default function RecordingRoom() {
                   controlsList="nodownload noplaybackrate noremoteplayback nofullscreen"
                 />
               ) : (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-3" style={{ color: "rgba(255,255,255,0.35)" }}>
-                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/30">
+                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-white/5">
                     <Play className="w-7 h-7" />
                   </div>
-                  <p className="text-xs">Nenhum video anexado a esta producao</p>
+                  <p className="text-xs">Nenhum vídeo anexado a esta produção</p>
                 </div>
               )}
 
@@ -2678,135 +2692,17 @@ export default function RecordingRoom() {
                 )}
               </AnimatePresence>
 
-              {currentScriptLine && (
-                <div className="absolute bottom-16 left-0 right-0 bg-gradient-to-t from-black/95 via-black/50 to-transparent pt-10 sm:pt-16 pb-4 sm:pb-6 px-4 sm:px-8 pointer-events-none">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span className="text-[10px] sm:text-[11px] font-mono text-blue-300/90 bg-black/50 px-1.5 py-0.5 rounded">
-                      {formatLiveTimecode(currentScriptLine.start)}
-                    </span>
-                    <span className="text-[11px] sm:text-xs font-semibold text-blue-300 uppercase tracking-widest">
-                      {currentScriptLine.character}
-                    </span>
-                  </div>
-                  <p className="text-white text-[16px] sm:text-lg font-light leading-snug max-w-[90%]">
-                    {currentScriptLine.text}
-                  </p>
-                </div>
-              )}
-
               <button
                 onClick={() => setIsMuted((m) => !m)}
-                className="absolute top-3 right-3 p-2 rounded-xl bg-black/40 text-white/60 hover:text-white transition-all hover:bg-black/60"
+                className="absolute top-4 right-4 p-2.5 rounded-xl bg-black/50 text-white/60 hover:text-white transition-all hover:bg-black/70 border border-white/10"
                 style={{ zIndex: UI_LAYER_BASE.floatingButtons }}
                 aria-label={isMuted ? "Ativar som" : "Desativar som"}
               >
                 {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
               </button>
 
-              <div className="absolute bottom-0 left-0 right-0 h-16 bg-black/80 backdrop-blur-md border-t border-white/10 flex items-center px-4 gap-4" style={{ zIndex: UI_LAYER_BASE.playerControls }}>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => seek(-2)}
-                    className="w-10 h-10 rounded-xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white"
-                    aria-label="Recuar 2 segundos"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={handlePlayPause}
-                    disabled={loopPreparing || loopSilenceActive}
-                    className="w-10 h-10 rounded-full flex items-center justify-center transition-all bg-primary text-primary-foreground shadow-lg"
-                    aria-label={isPlaying ? "Pausar" : "Reproduzir"}
-                  >
-                    {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
-                  </button>
-                </div>
-
-                <div className="flex-1 flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-[10px] font-mono text-white/50">
-                    <span>{formatLiveTimecode(videoTime)}</span>
-                    <span>{formatLiveTimecode(videoDuration)}</span>
-                  </div>
-                  <div className="relative h-1.5 rounded-full cursor-pointer group bg-white/10" onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    scrub((e.clientX - rect.left) / rect.width);
-                  }}>
-                    <div
-                      className="absolute top-0 bottom-0 rounded-full bg-primary"
-                      style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }}
-                    />
-                    {customLoop && videoDuration > 0 && (
-                      <>
-                        <div
-                          className="absolute -top-1.5 h-4 w-[2px] bg-indigo-300/90"
-                          style={{ left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%` }}
-                        />
-                        <div
-                          className="absolute -top-1.5 h-4 w-[2px] bg-indigo-300/90"
-                          style={{ left: `${Math.max(0, Math.min(100, (customLoop.end / videoDuration) * 100))}%` }}
-                        />
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleLoopButton}
-                    className={cn(
-                      "w-10 h-10 rounded-xl flex items-center justify-center transition-all border",
-                      loopSelectionMode !== "idle" || isLooping
-                        ? "bg-indigo-500/20 border-indigo-400/50 text-indigo-300"
-                        : "bg-white/5 border-white/10 text-white/70 hover:text-white"
-                    )}
-                    aria-label="Configurar loop"
-                  >
-                    <Repeat className="w-4 h-4" />
-                  </button>
-                  {recordingStatus === "idle" || recordingStatus === "recorded" ? (
-                    <button
-                      onClick={startCountdown}
-                      disabled={!micReady || isSaving}
-                      className={cn(
-                        "w-11 h-11 rounded-full flex items-center justify-center transition-all",
-                        isSaving ? "opacity-50 cursor-not-allowed bg-white/10 border border-white/20 text-white" : "bg-white/10 border border-white/20 text-white"
-                      )}
-                    >
-                      {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Mic className="w-5 h-5" />}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleStopRecording}
-                      className="w-11 h-11 rounded-full flex items-center justify-center transition-all bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.4)] animate-pulse"
-                    >
-                      <Square className="w-5 h-5 text-white fill-white" />
-                    </button>
-                  )}
-                </div>
-              </div>
-              {recordingStatus === "recorded" && (
-                <div className="absolute bottom-20 left-3 right-3 h-9 rounded-lg bg-black/70 border border-white/10 flex items-center justify-between px-3 text-[11px] text-white/80">
-                  {canApproveTake ? (
-                    <>
-                      <span>Take pronto para aprovação do diretor.</span>
-                      <button
-                        onClick={() => lastUploadedTakeId && setApprovalModalTakeId(lastUploadedTakeId)}
-                        disabled={!lastUploadedTakeId}
-                        className="h-7 px-2 rounded-md bg-primary/25 text-primary disabled:opacity-40 flex items-center gap-1"
-                      >
-                        <Save className="w-3.5 h-3.5" />
-                        Aprovar
-                      </button>
-                    </>
-                  ) : hasApproverPresent ? (
-                    <span>Take enviado. Aguardando aprovação do diretor.</span>
-                  ) : (
-                    <span>Take salvo automaticamente (sem aprovador na sala).</span>
-                  )}
-                </div>
-              )}
               {(customLoop || loopSelectionMode !== "idle" || loopPreparing || loopSilenceActive) && (
-                <div className="absolute top-3 left-3 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/40 px-3 flex items-center text-[11px] text-indigo-100 z-30">
+                <div className="absolute top-4 left-4 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 px-4 flex items-center text-[11px] text-indigo-100 z-30 backdrop-blur-md">
                   {loopPreparing && "Preparando loop... (3s)"}
                   {!loopPreparing && loopSilenceActive && "Silêncio entre loops... (3s)"}
                   {loopSelectionMode === "selecting-start" && "Loop: selecione a primeira fala"}
@@ -2815,161 +2711,269 @@ export default function RecordingRoom() {
                 </div>
               )}
             </div>
-          </div>
-        </div>
 
-        <div className="flex flex-col min-h-0 bg-background/40 relative">
-          <div className="h-11 shrink-0 px-5 flex items-center justify-between border-b border-border/70 bg-muted/30">
-            <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Roteiro
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !scriptAutoFollow;
-                  setScriptAutoFollow(next);
-                  if (next) syncScrollToCurrentVideoTime();
-                  logFeatureAudit("room.scroll.mode_changed", { mode: next ? "automatic" : "manual" });
-                }}
-                className="text-[10px] px-2 py-1 rounded-full transition-colors border bg-muted/60 text-muted-foreground border-border/70 flex items-center gap-2"
-                data-testid="toggle-scroll-mode"
-              >
-                <span>{scriptAutoFollow ? "ROLAGEM AUTOMÁTICA" : "ROLAGEM MANUAL"}</span>
-                <span className={cn("w-7 h-4 rounded-full transition-colors relative", scriptAutoFollow ? "bg-primary/30" : "bg-muted")}>
-                  <span className={cn("absolute top-0.5 h-3 w-3 rounded-full bg-primary transition-all", scriptAutoFollow ? "left-3.5" : "left-0.5")} />
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !onlySelectedCharacter;
-                  setOnlySelectedCharacter(next);
-                  logFeatureAudit("room.character_filter.toggled", { enabled: next, character: recordingProfile?.characterName || null });
-                }}
-                disabled={!recordingProfile}
-                className={cn(
-                  "text-[10px] px-2 py-1 rounded-full transition-colors border",
-                  onlySelectedCharacter ? "bg-primary/15 text-primary border-primary/25" : "bg-muted/60 text-muted-foreground border-border/70",
-                  !recordingProfile && "opacity-50 cursor-not-allowed"
-                )}
-              >
-                APENAS PERSONAGEM
-              </button>
-              <span className="text-xs text-muted-foreground">
-                <span className="font-mono text-foreground">{displayedScriptLines.length}</span>
-                {" "}/{" "}
-                {scriptLines.length}
-              </span>
+            {/* Texto Sincronizado (Fora do Video) */}
+            <div className="bg-zinc-950 border-t border-white/5 px-6 py-6 sm:px-10 sm:py-8 min-h-[140px] flex flex-col justify-center transition-all">
+              {currentScriptLine ? (
+                <div className="max-w-4xl mx-auto w-full">
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className="text-[10px] sm:text-xs font-mono text-blue-300/90 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                      {formatLiveTimecode(currentScriptLine.start)}
+                    </span>
+                    <span className="text-xs sm:text-sm font-bold text-blue-300 uppercase tracking-widest">
+                      {currentScriptLine.character}
+                    </span>
+                  </div>
+                  <p className="text-white text-xl sm:text-2xl md:text-3xl font-medium leading-tight tracking-tight">
+                    {currentScriptLine.text}
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center text-white/10 italic text-sm">Aguardando fala do roteiro...</div>
+              )}
             </div>
           </div>
 
-          <div
-            ref={scriptViewportRef}
-            className="flex-1 overflow-y-auto py-3 px-4 min-h-0 relative custom-scrollbar"
-            onScrollCapture={() => {
-              scrollSyncCurrentRef.current = scriptViewportRef.current?.scrollTop || 0;
-            }}
-          >
-              {displayedScriptLines.map((line) => {
-                const i = line.originalIndex;
-                const isActive = i === currentLine;
-                const isDone = savedTakes.has(i);
-                const isInLoop = customLoop ? line.start >= customLoop.start && line.end <= customLoop.end : false;
-                return (
-                  <div
-                    key={i}
-                    ref={(el) => { lineRefs.current[i] = el; }}
-                    onClick={canTextControl ? (() => handleLineClick(i)) : undefined}
-                    className={cn(
-                      "mb-3 px-5 py-4 rounded-xl transition-all duration-300 relative overflow-hidden",
-                      isActive ? "bg-background/85 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.22)] backdrop-blur-md" : "bg-transparent",
-                      isInLoop && "shadow-[inset_0_0_0_1px_rgba(129,140,248,0.45)] bg-indigo-500/10",
-                      canTextControl ? "cursor-pointer" : "cursor-default"
-                    )}
-                  >
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="text-[16px] font-mono tabular-nums text-muted-foreground">#{i + 1} · {formatLiveTimecode(line.start)}</span>
-                      <span className={cn("text-[24px] font-extrabold uppercase tracking-tight", isActive ? "text-primary" : "text-muted-foreground")}>
-                        {line.character}
-                      </span>
-                      {isDone && <CheckCircle2 className="w-5 h-5 ml-auto text-emerald-500" />}
-                    </div>
-                    <p className={cn("text-[22px] leading-relaxed", isActive ? "text-foreground font-medium" : "text-muted-foreground")}>
-                      {line.text}
-                    </p>
-                    {canTextControl && (
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            startInlineEdit(i, "character");
-                          }}
-                          className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          Personagem
-                        </button>
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            startInlineEdit(i, "text");
-                          }}
-                          className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          Fala
-                        </button>
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            startInlineEdit(i, "timecode");
-                          }}
-                          className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          Timecode
-                        </button>
+          {/* Coluna do Roteiro (Opcional/Lateral no Desktop) */}
+          {!isMobile && (
+            <div className="flex flex-col min-h-0 bg-background/40 border-l border-border/60">
+              <div className="h-11 shrink-0 px-5 flex items-center justify-between border-b border-border/70 bg-muted/30">
+                <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Roteiro Completo
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  <span className="font-mono text-foreground">{displayedScriptLines.length}</span> / {scriptLines.length}
+                </span>
+              </div>
+              <div
+                ref={scriptViewportRef}
+                className="flex-1 overflow-y-auto py-3 px-4 min-h-0 relative custom-scrollbar"
+                onScrollCapture={() => {
+                  scrollSyncCurrentRef.current = scriptViewportRef.current?.scrollTop || 0;
+                }}
+              >
+                {displayedScriptLines.map((line) => {
+                  const i = line.originalIndex;
+                  const isActive = i === currentLine;
+                  const isDone = savedTakes.has(i);
+                  const isInLoop = customLoop ? line.start >= customLoop.start && line.end <= customLoop.end : false;
+                  return (
+                    <div
+                      key={i}
+                      ref={(el) => { lineRefs.current[i] = el; }}
+                      onClick={canTextControl ? (() => handleLineClick(i)) : undefined}
+                      className={cn(
+                        "mb-3 px-5 py-4 rounded-xl transition-all duration-300 relative overflow-hidden",
+                        isActive ? "bg-background/85 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.22)] backdrop-blur-md" : "bg-transparent",
+                        isInLoop && "shadow-[inset_0_0_0_1px_rgba(129,140,248,0.45)] bg-indigo-500/10",
+                        canTextControl ? "cursor-pointer" : "cursor-default"
+                      )}
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-[13px] font-mono tabular-nums text-muted-foreground">#{i + 1} · {formatLiveTimecode(line.start)}</span>
+                        <span className={cn("text-[16px] font-extrabold uppercase tracking-tight", isActive ? "text-primary" : "text-muted-foreground")}>
+                          {line.character}
+                        </span>
+                        {isDone && <CheckCircle2 className="w-4 h-4 ml-auto text-emerald-500" />}
                       </div>
-                    )}
-                    {editingField?.lineIndex === i && (
-                      <div className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3" onClick={(event) => event.stopPropagation()}>
-                        {editingField.field === "text" ? (
-                          <textarea
-                            value={editingDraftValue}
-                            onChange={(event) => setEditingDraftValue(event.target.value)}
-                            className="w-full min-h-20 rounded-md border border-border/70 bg-background px-3 py-2 text-sm text-foreground outline-none"
-                          />
-                        ) : (
-                          <input
-                            value={editingDraftValue}
-                            onChange={(event) => setEditingDraftValue(event.target.value)}
-                            className="w-full h-9 rounded-md border border-border/70 bg-background px-3 text-sm text-foreground outline-none"
-                          />
-                        )}
-                        <div className="mt-2 flex items-center justify-end gap-2">
+                      <p className={cn("text-[15px] leading-relaxed", isActive ? "text-foreground font-medium" : "text-muted-foreground")}>
+                        {line.text}
+                      </p>
+                      {canTextControl && (
+                        <div className="mt-3 flex items-center gap-2">
                           <button
-                            onClick={cancelInlineEdit}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              startInlineEdit(i, "character");
+                            }}
                             className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
                           >
-                            Cancelar
+                            Personagem
                           </button>
                           <button
-                            onClick={saveInlineEdit}
-                            className="h-7 px-2 rounded-md bg-primary/20 text-[11px] text-primary hover:bg-primary/30"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              startInlineEdit(i, "text");
+                            }}
+                            className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
                           >
-                            Salvar
+                            Fala
+                          </button>
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              startInlineEdit(i, "timecode");
+                            }}
+                            className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            Timecode
                           </button>
                         </div>
-                      </div>
-                    )}
-                    {lineEditHistory[i]?.[0] && (
-                      <div className="mt-2 text-[11px] text-muted-foreground">
-                        Última alteração: {lineEditHistory[i][0].field} por {lineEditHistory[i][0].by}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                      )}
+                      {editingField?.lineIndex === i && (
+                        <div className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3" onClick={(event) => event.stopPropagation()}>
+                          {editingField.field === "text" ? (
+                            <textarea
+                              value={editingDraftValue}
+                              onChange={(event) => setEditingDraftValue(event.target.value)}
+                              className="w-full min-h-20 rounded-md border border-border/70 bg-background px-3 py-2 text-sm text-foreground outline-none"
+                            />
+                          ) : (
+                            <input
+                              value={editingDraftValue}
+                              onChange={(event) => setEditingDraftValue(event.target.value)}
+                              className="w-full h-9 rounded-md border border-border/70 bg-background px-3 text-sm text-foreground outline-none"
+                            />
+                          )}
+                          <div className="mt-2 flex items-center justify-end gap-2">
+                            <button
+                              onClick={cancelInlineEdit}
+                              className="h-7 px-2 rounded-md bg-muted/70 text-[11px] text-muted-foreground hover:text-foreground"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              onClick={saveInlineEdit}
+                              className="h-7 px-2 rounded-md bg-primary/20 text-[11px] text-primary hover:bg-primary/30"
+                            >
+                              Salvar
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {lineEditHistory[i]?.[0] && (
+                        <div className="mt-2 text-[11px] text-muted-foreground">
+                          Última alteração: {lineEditHistory[i][0].field} por {lineEditHistory[i][0].by}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Rodapé de Controles (Sempre Visível ou Auto-hide) */}
+        <footer
+          className={cn(
+            "h-24 bg-zinc-950/95 backdrop-blur-xl border-t border-white/10 flex flex-col sm:flex-row items-center px-6 gap-4 sm:gap-8 transition-all duration-300 ease-in-out z-50",
+            !controlsVisible && "translate-y-full opacity-0 pointer-events-none"
+          )}
+          onMouseEnter={() => {
+            setControlsVisible(true);
+            if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+          }}
+        >
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => seek(-2)}
+              className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-white/10"
+              aria-label="Recuar 2 segundos"
+            >
+              <RotateCcw className="w-5 h-5" />
+            </button>
+            <button
+              onClick={handlePlayPause}
+              disabled={loopPreparing || loopSilenceActive}
+              className="w-14 h-14 rounded-full flex items-center justify-center transition-all bg-primary text-primary-foreground shadow-lg hover:scale-105 active:scale-95 disabled:opacity-50"
+              aria-label={isPlaying ? "Pausar" : "Reproduzir"}
+            >
+              {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
+            </button>
+            <button
+              onClick={() => seek(2)}
+              className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-white/10"
+              aria-label="Avançar 2 segundos"
+            >
+              <RotateCcw className="w-5 h-5 flip-horizontal" style={{ transform: "scaleX(-1)" }} />
+            </button>
+          </div>
+
+          <div className="flex-1 w-full flex flex-col gap-2">
+            <div className="flex items-center justify-between text-[11px] font-mono text-white/40 px-1">
+              <span>{formatLiveTimecode(videoTime)}</span>
+              <span>{formatLiveTimecode(videoDuration)}</span>
+            </div>
+            <div
+              className="relative h-2 rounded-full cursor-pointer group bg-white/10 overflow-hidden"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                scrub((e.clientX - rect.left) / rect.width);
+              }}
+            >
+              <div
+                className="absolute top-0 bottom-0 rounded-full bg-primary transition-all duration-100"
+                style={{ width: `${videoDuration > 0 ? (videoTime / videoDuration) * 100 : 0}%` }}
+              />
+              {customLoop && videoDuration > 0 && (
+                <>
+                  <div
+                    className="absolute top-0 bottom-0 w-[2px] bg-indigo-400 z-10"
+                    style={{ left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%` }}
+                  />
+                  <div
+                    className="absolute top-0 bottom-0 w-[2px] bg-indigo-400 z-10"
+                    style={{ left: `${Math.max(0, Math.min(100, (customLoop.end / videoDuration) * 100))}%` }}
+                  />
+                  <div
+                    className="absolute top-0 bottom-0 bg-indigo-500/20"
+                    style={{
+                      left: `${Math.max(0, Math.min(100, (customLoop.start / videoDuration) * 100))}%`,
+                      width: `${Math.max(0, Math.min(100, ((customLoop.end - customLoop.start) / videoDuration) * 100))}%`
+                    }}
+                  />
+                </>
+              )}
             </div>
           </div>
+
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleLoopButton}
+              className={cn(
+                "w-12 h-12 rounded-2xl flex items-center justify-center transition-all border",
+                loopSelectionMode !== "idle" || isLooping
+                  ? "bg-indigo-500/20 border-indigo-400/50 text-indigo-300"
+                  : "bg-white/5 border-white/10 text-white/70 hover:text-white hover:bg-white/10"
+              )}
+              aria-label="Configurar loop"
+            >
+              <Repeat className="w-5 h-5" />
+            </button>
+
+            {recordingStatus === "idle" || recordingStatus === "recorded" ? (
+              <button
+                onClick={startCountdown}
+                disabled={!micReady || isSaving}
+                className={cn(
+                  "w-14 h-14 rounded-full flex items-center justify-center transition-all border shadow-xl",
+                  isSaving
+                    ? "opacity-50 cursor-not-allowed bg-white/5 border-white/10 text-white/20"
+                    : "bg-white/10 border-white/20 text-white hover:bg-white/20 hover:scale-105 active:scale-95"
+                )}
+              >
+                {isSaving ? <Loader2 className="w-6 h-6 animate-spin" /> : <Mic className="w-6 h-6" />}
+              </button>
+            ) : (
+              <button
+                onClick={handleStopRecording}
+                className="w-14 h-14 rounded-full flex items-center justify-center transition-all bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse hover:scale-105 active:scale-95"
+              >
+                <Square className="w-6 h-6 text-white fill-white" />
+              </button>
+            )}
+          </div>
+
+          {/* Toast de Aprovação Integrado no Rodapé se necessário, ou overlay acima dele */}
+          {recordingStatus === "recorded" && (
+            <div className="absolute bottom-full left-0 right-0 mb-4 px-6 pointer-events-none">
+              <div className="max-w-md mx-auto h-12 rounded-2xl bg-zinc-900 border border-white/10 shadow-2xl flex items-center justify-between px-4 text-xs text-white/90 pointer-events-auto backdrop-blur-xl">
+                <span>Take salvo automaticamente.</span>
+              </div>
+            </div>
+          )}
+        </footer>
         </div>
 
       <AnimatePresence>
