@@ -178,13 +178,13 @@ function normalizeRoomRole(role: unknown) {
 }
 
 type UiRole = "viewer" | "text_controller" | "audio_controller" | "admin";
-type UiPermission = "text_control" | "audio_control" | "presence_view" | "approve_take" | "discard_take" | "dashboard_access";
+type UiPermission = "text_control" | "audio_control" | "presence_view" | "approve_take" | "dashboard_access";
 
 const UI_ROLE_PERMISSIONS: Record<UiRole, UiPermission[]> = {
   viewer: [],
   text_controller: ["text_control", "presence_view"],
-  audio_controller: ["audio_control", "approve_take", "discard_take", "dashboard_access", "presence_view"],
-  admin: ["text_control", "audio_control", "approve_take", "discard_take", "dashboard_access", "presence_view"],
+  audio_controller: ["audio_control", "approve_take", "dashboard_access", "presence_view"],
+  admin: ["text_control", "audio_control", "approve_take", "dashboard_access", "presence_view"],
 };
 
 function resolveUiRole(role: unknown, controlledText: boolean): UiRole {
@@ -780,6 +780,8 @@ export default function RecordingRoom() {
 
   const handleDiscardTake = useCallback(async (take: any) => {
     const takeId = String(take.id);
+    const normalizedRole = normalizeRoomRole(user?.role);
+    const canDeletePermanently = normalizedRole === "platform_owner" || normalizedRole === "master";
     const takesQueryKey = ["/api/sessions", sessionId, "takes"] as const;
     const recordingsQueryKey = ["/api/sessions", sessionId, "recordings"] as const;
     const previousTakes = queryClient.getQueryData(takesQueryKey);
@@ -793,16 +795,23 @@ export default function RecordingRoom() {
     );
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 260));
-      await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
+      if (canDeletePermanently) {
+        await authFetch(`/api/takes/${takeId}`, { method: "DELETE" });
+      } else {
+        await authFetch(`/api/takes/${takeId}/discard`, {
+          method: "POST",
+          body: JSON.stringify({ confirm: true }),
+        });
+      }
       await queryClient.invalidateQueries({ queryKey: takesQueryKey });
       await queryClient.invalidateQueries({ queryKey: recordingsQueryKey, exact: false });
-      await logFeatureAudit("room.take.deleted", { takeId });
-      toast({ title: "Take excluído permanentemente" });
+      await logFeatureAudit(canDeletePermanently ? "room.take.deleted" : "room.take.discarded", { takeId });
+      toast({ title: canDeletePermanently ? "Take excluído permanentemente" : "Take descartado" });
       setDiscardModalTake(null);
       setDiscardFinalStep(false);
     } catch (error: any) {
       queryClient.setQueryData(takesQueryKey, previousTakes);
-      toast({ title: "Falha ao excluir take", description: error?.message || "Tente novamente", variant: "destructive" });
+      toast({ title: canDeletePermanently ? "Falha ao excluir take" : "Falha ao descartar take", description: error?.message || "Tente novamente", variant: "destructive" });
     } finally {
       setOptimisticRemovingTakeIds((prev) => {
         const next = new Set(prev);
@@ -810,7 +819,7 @@ export default function RecordingRoom() {
         return next;
       });
     }
-  }, [queryClient, sessionId, toast, logFeatureAudit]);
+  }, [queryClient, sessionId, toast, logFeatureAudit, user?.role]);
 
   const [videoTime, setVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -904,12 +913,16 @@ export default function RecordingRoom() {
     return normalizeRoomRole(user?.role);
   }, [session?.participants, user?.id, user?.role]);
   const uiRole = useMemo(() => resolveUiRole(mySessionRole, Boolean(user?.id && textControllerUserIds.has(user.id))), [mySessionRole, user?.id, textControllerUserIds]);
+  const isPlatformOwner = useMemo(() => {
+    const normalized = normalizeRoomRole(user?.role);
+    return normalized === "platform_owner" || normalized === "master";
+  }, [user?.role]);
   const canReleaseText = hasUiPermission(uiRole, "text_control");
   const canTextControl = hasUiPermission(uiRole, "text_control");
   const canViewOnlineUsers = hasUiPermission(uiRole, "presence_view");
   const canManageAudio = hasUiPermission(uiRole, "audio_control");
   const canApproveTake = hasUiPermission(uiRole, "approve_take");
-  const canDiscardTake = hasUiPermission(uiRole, "discard_take");
+  const canDiscardTake = isPlatformOwner;
   const canAccessDashboard = hasUiPermission(uiRole, "dashboard_access");
   const isPrivileged = canManageAudio || canTextControl;
   const scopedRecordings = useMemo(() => {
@@ -1930,16 +1943,15 @@ export default function RecordingRoom() {
   }, [recordingsOpen, scopedRecordings, resolveTakePlayableUrl, recordingAvailability]);
 
   const handleDownloadTake = useCallback(async (take: any) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 45000);
     try {
       const takeId = String(take?.id || "");
       if (!takeId) throw new Error("Take inválido.");
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 45000);
       const response = await fetch(`/api/takes/${takeId}/download`, {
         credentials: "include",
         signal: controller.signal,
       });
-      window.clearTimeout(timeout);
       if (!response.ok) {
         throw new Error(`Falha ao baixar take (${response.status})`);
       }
@@ -1958,6 +1970,8 @@ export default function RecordingRoom() {
     } catch (err) {
       toast({ title: "Erro ao baixar take", description: String((err as any)?.message || err), variant: "destructive" });
       throw err;
+    } finally {
+      window.clearTimeout(timeout);
     }
   }, [toast]);
 

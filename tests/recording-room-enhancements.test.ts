@@ -25,10 +25,9 @@ test("RecordingRoom cabeçalho usa botão PAINEL e remove ações antigas", () =
 
 test("RecordingRoom expõe filtros e labels novos de rolagem", () => {
   const room = readFileSync(roomPath, "utf8");
-  assert.match(room, /APENAS PERSONAGEM/);
-  assert.match(room, /ROLAGEM AUTOMÁTICA/);
-  assert.match(room, /ROLAGEM MANUAL/);
-  assert.match(room, /toggle-scroll-mode/);
+  assert.match(room, /Apenas Meu Personagem/);
+  assert.match(room, /Ativar Rolagem Automática/);
+  assert.match(room, /Desativar Rolagem Automática/);
   assert.match(room, /Loop ativo/);
   assert.match(room, /button-room-recordings/);
   assert.match(room, /Gravações/);

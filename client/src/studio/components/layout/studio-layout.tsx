@@ -1,7 +1,9 @@
 import { useAuth } from "@studio/hooks/use-auth";
-import { ShieldAlert, LogOut, Building2, UserCircle, LayoutDashboard, Calendar } from "lucide-react";
+import { ShieldAlert, LogOut, Building2, UserCircle, LayoutDashboard, Calendar, Menu, X } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { pt } from "@studio/lib/i18n";
+import { useState } from "react";
+import { useIsMobile } from "@studio/hooks/use-mobile";
 
 interface StudioLayoutProps {
   studioId: string;
@@ -11,6 +13,8 @@ interface StudioLayoutProps {
 export function StudioLayout({ studioId, children }: StudioLayoutProps) {
   const { user, logout } = useAuth();
   const [location] = useLocation();
+  const isMobile = useIsMobile();
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   const navItems = [
     { title: pt.nav.dashboard, url: `/hub-dub/studio/${studioId}/dashboard`, icon: LayoutDashboard },
@@ -26,63 +30,67 @@ export function StudioLayout({ studioId, children }: StudioLayoutProps) {
       </div>
 
       <div className="flex flex-col flex-1 w-full overflow-hidden min-w-0 relative z-10">
-        <header className="flex h-16 shrink-0 items-center gap-8 px-8 sticky top-0 z-50 border-b border-border/60 bg-background/70 backdrop-blur-xl supports-[backdrop-filter]:bg-background/50 shadow-sm">
+        <header className="flex h-16 shrink-0 items-center gap-4 md:gap-8 px-4 md:px-8 sticky top-0 z-50 border-b border-border/60 bg-background/70 backdrop-blur-xl supports-[backdrop-filter]:bg-background/50 shadow-sm">
           <Link href="/">
-            <div className="flex items-center gap-3 cursor-pointer group">
+            <div className="flex items-center gap-3 cursor-pointer group shrink-0">
               <div className="h-8 w-8 rounded-lg border border-border/70 bg-card/70 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
                 <img src="/logo.svg" alt="V.HUB" className="h-5 w-5" />
               </div>
-              <span className="font-semibold tracking-tight text-sm text-foreground">V.HUB</span>
+              <span className="font-semibold tracking-tight text-sm text-foreground hidden sm:inline">V.HUB</span>
             </div>
           </Link>
 
-          <nav className="flex items-center gap-1">
-            {navItems.map((item) => {
-              const isActive = location === item.url || location.startsWith(item.url + "?");
-              return (
-                <Link key={item.url} href={item.url}>
-                  <button 
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium transition-all ${
-                      isActive 
-                        ? "bg-primary/10 text-primary border border-primary/20" 
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                    }`}
-                  >
-                    <item.icon className="h-3.5 w-3.5" />
-                    {item.title}
-                  </button>
-                </Link>
-              );
-            })}
-          </nav>
+          {!isMobile && (
+            <nav className="flex items-center gap-1">
+              {navItems.map((item) => {
+                const isActive = location === item.url || location.startsWith(item.url + "?");
+                return (
+                  <Link key={item.url} href={item.url}>
+                    <button 
+                      className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium transition-all ${
+                        isActive 
+                          ? "bg-primary/10 text-primary border border-primary/20" 
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                      }`}
+                    >
+                      <item.icon className="h-3.5 w-3.5" />
+                      {item.title}
+                    </button>
+                  </Link>
+                );
+              })}
+            </nav>
+          )}
 
           <div className="flex-1" />
           
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1 border-r border-border/60 pr-4">
-              <Link href="/hub-dub/profile">
-                <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2.5 py-1.5 rounded-md hover:bg-muted/40" data-testid="button-header-profile">
-                  <UserCircle className="h-3.5 w-3.5" />
-                  Perfil
+          <div className="flex items-center gap-2 md:gap-4">
+            {!isMobile && (
+              <div className="flex items-center gap-1 border-r border-border/60 pr-4">
+                <Link href="/hub-dub/profile">
+                  <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2.5 py-1.5 rounded-md hover:bg-muted/40" data-testid="button-header-profile">
+                    <UserCircle className="h-3.5 w-3.5" />
+                    Perfil
+                  </button>
+                </Link>
+                <Link href="/hub-dub/studios">
+                  <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2.5 py-1.5 rounded-md hover:bg-muted/40" data-testid="button-header-switch-studio">
+                    <Building2 className="h-3.5 w-3.5" />
+                    Trocar Estúdio
+                  </button>
+                </Link>
+                <button 
+                  onClick={() => logout()}
+                  className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-red-500 transition-colors px-2.5 py-1.5 rounded-md hover:bg-red-500/5" 
+                  data-testid="button-header-logout"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  Sair
                 </button>
-              </Link>
-              <Link href="/hub-dub/studios">
-                <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2.5 py-1.5 rounded-md hover:bg-muted/40" data-testid="button-header-switch-studio">
-                  <Building2 className="h-3.5 w-3.5" />
-                  Trocar Estúdio
-                </button>
-              </Link>
-              <button 
-                onClick={() => logout()}
-                className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-red-500 transition-colors px-2.5 py-1.5 rounded-md hover:bg-red-500/5" 
-                data-testid="button-header-logout"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                Sair
-              </button>
-            </div>
+              </div>
+            )}
             
-            {user?.role === "platform_owner" && (
+            {user?.role === "platform_owner" && !isMobile && (
               <Link href="/hub-dub/admin">
                 <button className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-full border border-border/60 bg-card/60 hover:bg-card" data-testid="button-header-admin">
                   <ShieldAlert className="h-3.5 w-3.5" />
@@ -90,10 +98,74 @@ export function StudioLayout({ studioId, children }: StudioLayoutProps) {
                 </button>
               </Link>
             )}
+
+            {isMobile && (
+              <button 
+                onClick={() => setIsMenuOpen(!isMenuOpen)}
+                className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground"
+              >
+                {isMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+              </button>
+            )}
           </div>
         </header>
+
+        {isMobile && isMenuOpen && (
+          <div className="fixed inset-0 top-16 z-[60] bg-background/95 backdrop-blur-md p-6 flex flex-col gap-6 animate-in slide-in-from-top-4 duration-300">
+            <nav className="flex flex-col gap-2">
+              {navItems.map((item) => {
+                const isActive = location === item.url || location.startsWith(item.url + "?");
+                return (
+                  <Link key={item.url} href={item.url} onClick={() => setIsMenuOpen(false)}>
+                    <button 
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all w-full ${
+                        isActive 
+                          ? "bg-primary/10 text-primary border border-primary/20" 
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                      }`}
+                    >
+                      <item.icon className="h-4 w-4" />
+                      {item.title}
+                    </button>
+                  </Link>
+                );
+              })}
+            </nav>
+            <div className="h-px bg-border/60" />
+            <div className="flex flex-col gap-2">
+              <Link href="/hub-dub/profile" onClick={() => setIsMenuOpen(false)}>
+                <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground w-full transition-colors">
+                  <UserCircle className="h-4 w-4" />
+                  Perfil
+                </button>
+              </Link>
+              <Link href="/hub-dub/studios" onClick={() => setIsMenuOpen(false)}>
+                <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground w-full transition-colors">
+                  <Building2 className="h-4 w-4" />
+                  Trocar Estúdio
+                </button>
+              </Link>
+              {user?.role === "platform_owner" && (
+                <Link href="/hub-dub/admin" onClick={() => setIsMenuOpen(false)}>
+                  <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground w-full transition-colors">
+                    <ShieldAlert className="h-4 w-4" />
+                    Admin
+                  </button>
+                </Link>
+              )}
+              <button 
+                onClick={() => { logout(); setIsMenuOpen(false); }}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-500/5 w-full transition-colors mt-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Sair
+              </button>
+            </div>
+          </div>
+        )}
+
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-7xl px-8 py-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+          <div className="mx-auto max-w-7xl px-4 md:px-8 py-4 md:py-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
             {children}
           </div>
         </main>

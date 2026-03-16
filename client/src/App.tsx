@@ -208,47 +208,12 @@ function Router() {
             )}
           </Route>
 
-          <Route path="/hub-dub/studio/:studioId/notifications">
-            {params => (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full h-full">
-                <ProtectedRoute component={Notifications} requireStudio params={params} />
-              </motion.div>
-            )}
+          <Route path="/hub-dub/:rest*">
+            <NotFound />
           </Route>
-
-          <Route path="/hub-dub/studio/:studioId/takes">
-            {params => (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full h-full">
-                <ProtectedRoute component={Takes} requireStudio params={params} />
-              </motion.div>
-            )}
+          <Route>
+            <NotFound />
           </Route>
-
-          <Route path="/hub-dub/studio/:studioId/admin">
-            {params => (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full h-full">
-                <ProtectedRoute component={StudioAdmin} requireStudio params={params} />
-              </motion.div>
-            )}
-          </Route>
-
-          <Route path="/hub-dub/studio/:studioId/staff">
-            {params => (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full h-full">
-                <ProtectedRoute component={Staff} requireStudio params={params} />
-              </motion.div>
-            )}
-          </Route>
-
-          <Route path="/hub-dub/studio/:studioId/members">
-            {params => (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full h-full">
-                <ProtectedRoute component={Members} requireStudio params={params} />
-              </motion.div>
-            )}
-          </Route>
-
-
         </Switch>
       </AnimatePresence>
     </Suspense>

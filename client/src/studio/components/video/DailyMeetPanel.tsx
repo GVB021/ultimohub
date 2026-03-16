@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import DailyIframe from "@daily-co/daily-js";
 import { Video, VideoOff, Mic, MicOff, PhoneOff, Minimize2, Maximize2, RefreshCw } from "lucide-react";
 import { authFetch } from "@studio/lib/auth-fetch";
@@ -15,6 +15,8 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
   const panelRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<any>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const touchLastYRef = useRef<number | null>(null);
   const [internalOpen, setInternalOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -114,13 +116,38 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
     const margin = 16;
     const maxWidth = Math.max(220, viewport.width - margin * 2);
     const width = isMinimized ? maxWidth : Math.max(220, Math.min(maxWidth, viewport.width * (isLandscape ? 0.8 : 0.94)));
-    const targetHeightRatio = isLandscape ? 0.42 : 0.5;
+    const targetHeightRatio = isLandscape ? 0.3 : 0.25;
     const expandedHeight = Math.max(260, Math.min(viewport.height * targetHeightRatio, viewport.height - margin * 3));
     return {
       width,
       height: isMinimized ? 64 : Math.round(expandedHeight),
     };
   }, [isLandscape, isMinimized, isMobile, viewport.height, viewport.width]);
+
+  const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    const y = event.touches[0]?.clientY;
+    if (typeof y !== "number") return;
+    touchStartYRef.current = y;
+    touchLastYRef.current = y;
+  };
+
+  const handleTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+    const y = event.touches[0]?.clientY;
+    if (typeof y !== "number") return;
+    touchLastYRef.current = y;
+  };
+
+  const handleTouchEnd = () => {
+    if (!isMobile) return;
+    const start = touchStartYRef.current;
+    const end = touchLastYRef.current;
+    touchStartYRef.current = null;
+    touchLastYRef.current = null;
+    if (typeof start !== "number" || typeof end !== "number") return;
+    const delta = end - start;
+    if (delta > 35) setIsMinimized(true);
+    if (delta < -35) setIsMinimized(false);
+  };
 
   useEffect(() => {
     if (!isResizingSplit || isMobile) return;
@@ -141,7 +168,12 @@ export function DailyMeetPanel({ sessionId, zIndexBase = 1150, open, onOpenChang
   }, [isResizingSplit, isMobile]);
 
   return (
-    <div className={`absolute top-full right-0 mt-2 ${isOpen ? "" : "pointer-events-none opacity-0"} transition-opacity duration-200`}>
+    <div
+      className={`absolute top-full right-0 mt-2 ${isOpen ? "" : "pointer-events-none opacity-0"} transition-opacity duration-200`}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
       <div
         ref={panelRef}
         className={`bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-top-2 transition-all duration-200 ${isMinimized ? "rounded-2xl" : ""}`}

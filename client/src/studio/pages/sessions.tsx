@@ -21,7 +21,7 @@ import { useAuth } from "@studio/hooks/use-auth";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authFetch } from "@studio/lib/auth-fetch";
 import {
-  PageSection, PageHeader, EmptyState, StatusBadge, FieldGroup, GridSkeleton
+  PageSection, PageHeader, EmptyState, StatusBadge, FieldGroup
 } from "@studio/components/ui/design-system";
 import { pt } from "@studio/lib/i18n";
 import { computeSessionStatus, sessionEntryAllowed, formatCountdownTime } from "@studio/lib/session-status";
@@ -31,11 +31,11 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
   const { data: productions } = useProductions(studioId);
   const createSession = useCreateSession(studioId);
   const { toast } = useToast();
-  const [location, navigate] = useLocation();
+  const [, navigate] = useLocation();
   const { canCreateSessions, hasMinRole } = useStudioRole(studioId);
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const isStudioAdmin = hasMinRole("studio_admin");
+  const canDeleteSessions = user?.role === "platform_owner";
   const { data: storageOptions } = useQuery({
     queryKey: ["/api/storage/options"],
     queryFn: () => authFetch("/api/storage/options") as Promise<any>,
@@ -155,14 +155,7 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
                       />
                     </FieldGroup>
                     <FieldGroup label="Armazenamento dos Takes">
-                      <Select value={storageProvider} onValueChange={() => {}}>
-                        <SelectTrigger disabled className="disabled:opacity-70" data-testid="select-storage-provider">
-                          <SelectValue placeholder="Selecionar..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="supabase">Supabase</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <Input value="Supabase" disabled data-testid="input-storage-provider" />
                       {storageOptions && (
                         <p className="text-xs text-muted-foreground mt-2">
                           {storageOptions.supabaseOk ? "Conexao OK" : `Conexao falhou: ${storageOptions.supabaseReason || "—"}`}
@@ -251,7 +244,7 @@ const Sessions = memo(function Sessions({ studioId }: { studioId: string }) {
 
                 <div className="flex items-center gap-3 shrink-0">
                   <StatusBadge status={computedStatus} />
-                  {(isStudioAdmin || (canCreateSessions && (session as any).createdBy === user?.id)) && (
+                  {canDeleteSessions && (
                     <Button
                       size="sm"
                       variant="ghost"

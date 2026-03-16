@@ -23,6 +23,7 @@ import {
 import { pt } from "@studio/lib/i18n";
 import { useToast } from "@studio/hooks/use-toast";
 import { useStudioRole } from "@studio/hooks/use-studio-role";
+import { useAuth } from "@studio/hooks/use-auth";
 import { format } from "date-fns";
 
 const STUDIO_ROLES = [
@@ -53,6 +54,8 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { canManageMembers } = useStudioRole(studioId);
+  const { user } = useAuth();
+  const isPlatformOwner = user?.role === "platform_owner";
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
 
   const [selectedRoles, setSelectedRoles] = useState<Record<string, string[]>>({});
@@ -174,6 +177,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
 
   const removeMemberMutation = useMutation({
     mutationFn: async (membershipId: string) => {
+      if (!isPlatformOwner) throw new Error("Somente PLATFORM_OWNER pode remover membros.");
       return authFetch(`/api/studios/${studioId}/members/${membershipId}`, { method: "DELETE" });
     },
     onSuccess: () => {
@@ -224,6 +228,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
 
   const deleteProductionMutation = useMutation({
     mutationFn: async (id: string) => {
+      if (!isPlatformOwner) throw new Error("Somente PLATFORM_OWNER pode excluir produções.");
       return authFetch(`/api/studios/${studioId}/productions/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
@@ -280,6 +285,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
 
   const deleteSessionMutation = useMutation({
     mutationFn: async (id: string) => {
+      if (!isPlatformOwner) throw new Error("Somente PLATFORM_OWNER pode excluir sessões.");
       return authFetch(`/api/studios/${studioId}/sessions/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
@@ -486,14 +492,16 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
                               >
                                 <Pencil className="w-3.5 h-3.5" />
                               </Button>
-                              <Button
-                                size="icon" variant="ghost"
-                                className="text-destructive hover:bg-destructive/10"
-                                onClick={() => setRemoveMemberConfirm(m)}
-                                data-testid={`button-remove-member-${m.id}`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
+                              {isPlatformOwner && (
+                                <Button
+                                  size="icon" variant="ghost"
+                                  className="text-destructive hover:bg-destructive/10"
+                                  onClick={() => setRemoveMemberConfirm(m)}
+                                  data-testid={`button-remove-member-${m.id}`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -548,14 +556,16 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
                           >
                             <Pencil className="w-3.5 h-3.5" />
                           </Button>
-                          <Button
-                            size="icon" variant="ghost"
-                            className="text-destructive hover:bg-destructive/10"
-                            onClick={() => setDeleteProductionConfirm(p)}
-                            data-testid={`button-delete-production-${p.id}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
+                          {isPlatformOwner && (
+                            <Button
+                              size="icon" variant="ghost"
+                              className="text-destructive hover:bg-destructive/10"
+                              onClick={() => setDeleteProductionConfirm(p)}
+                              data-testid={`button-delete-production-${p.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -618,14 +628,16 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
                           >
                             <Pencil className="w-3.5 h-3.5" />
                           </Button>
-                          <Button
-                            size="icon" variant="ghost"
-                            className="text-destructive hover:bg-destructive/10"
-                            onClick={() => setDeleteSessionConfirm(s)}
-                            data-testid={`button-delete-session-${s.id}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
+                          {isPlatformOwner && (
+                            <Button
+                              size="icon" variant="ghost"
+                              className="text-destructive hover:bg-destructive/10"
+                              onClick={() => setDeleteSessionConfirm(s)}
+                              data-testid={`button-delete-session-${s.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -763,7 +775,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!removeMemberConfirm} onOpenChange={v => { if (!v) setRemoveMemberConfirm(null); }}>
+      <Dialog open={isPlatformOwner && !!removeMemberConfirm} onOpenChange={v => { if (!v) setRemoveMemberConfirm(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Remover Membro</DialogTitle>
@@ -828,7 +840,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!deleteProductionConfirm} onOpenChange={v => { if (!v) setDeleteProductionConfirm(null); }}>
+      <Dialog open={isPlatformOwner && !!deleteProductionConfirm} onOpenChange={v => { if (!v) setDeleteProductionConfirm(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Excluir Producao</DialogTitle>
@@ -894,7 +906,7 @@ const StudioAdmin = memo(function StudioAdmin({ studioId }: { studioId: string }
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!deleteSessionConfirm} onOpenChange={v => { if (!v) setDeleteSessionConfirm(null); }}>
+      <Dialog open={isPlatformOwner && !!deleteSessionConfirm} onOpenChange={v => { if (!v) setDeleteSessionConfirm(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Excluir Sessao</DialogTitle>

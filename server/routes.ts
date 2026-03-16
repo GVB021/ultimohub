@@ -141,6 +141,7 @@ const ALLOWED_AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a"]);
 const ALLOWED_AUDIO_MIME_PREFIXES = ["audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/m4a"];
 const MAX_TAKE_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 const MIN_SAMPLE_RATE_HZ = 44100;
+const SUPABASE_DOWNLOAD_URL_TTL_SECONDS = 900;
 
 const audioRateLimitMap = new Map<string, { count: number; resetAt: number }>();
 function audioRateLimiter(req: Request, res: Response, next: any) {
@@ -161,6 +162,15 @@ function audioRateLimiter(req: Request, res: Response, next: any) {
     return res.status(429).json({ message: "Muitas solicitações de áudio. Tente novamente em 1 minuto." });
   }
   next();
+}
+
+function requirePlatformOwnerDelete(req: Request, res: Response) {
+  const role = normalizePlatformRole((req.user as any)?.role);
+  if (role !== "platform_owner") {
+    res.status(403).json({ message: "Somente PLATFORM_OWNER pode excluir recursos" });
+    return false;
+  }
+  return true;
 }
 
 function normalizeTakeFolder(value: unknown) {
@@ -799,6 +809,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // MEMBERS - REMOVE
   app.delete("/api/studios/:studioId/members/:membershipId", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
     try {
+      if (!requirePlatformOwnerDelete(req, res)) return;
       const membership = await storage.getMembership(req.params.membershipId);
       if (!membership || membership.studioId !== req.params.studioId) {
         return res.status(404).json({ message: "Membro nao encontrado" });
@@ -895,6 +906,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/studios/:studioId/productions/:id", requireAuth, requireStudioRole("studio_admin"), async (req, res) => {
     try {
+      if (!requirePlatformOwnerDelete(req, res)) return;
       const prod = await storage.getProduction(req.params.id);
       if (!prod) return res.status(404).json({ message: "Producao nao encontrada" });
       if (prod.studioId !== req.params.studioId) return res.status(403).json({ message: "Acesso negado" });
@@ -999,15 +1011,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/studios/:studioId/sessions/:id", requireAuth, requireStudioRole("studio_admin", "diretor"), async (req, res) => {
     try {
+      if (!requirePlatformOwnerDelete(req, res)) return;
       const session = await storage.getSession(req.params.id);
       if (!session || session.studioId !== req.params.studioId) return res.status(404).json({ message: "Sessao nao encontrada" });
-      const userId = (req.user as any)?.id;
-      const userRole = (req.user as any)?.role;
-      const studioRole = (req as any).studioRole;
-      const isAdmin = userRole === "platform_owner" || studioRole === "studio_admin";
-      if (!isAdmin && session.createdBy !== userId) {
-        return res.status(403).json({ message: "Voce so pode excluir sessoes criadas por voce" });
-      }
       await storage.deleteSession(req.params.id);
       res.status(200).json({ message: "Sessao excluida" });
     } catch (err) {
@@ -1446,15 +1452,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.delete("/api/takes/:id", requireAuth, async (req, res) => {
     try {
+      if (!requirePlatformOwnerDelete(req, res)) return;
       const [takeRecord] = await db.select().from(takes).where(eq(takes.id, req.params.id));
       if (!takeRecord) return res.status(404).json({ message: "Take nao encontrado" });
-      const user = (req as any).user!;
-      const session = await storage.getSession(takeRecord.sessionId);
-      const canManage = session ? await canManageSessionTakes(user, takeRecord.sessionId, session.studioId) : false;
-      if (canManage && user.role !== "platform_owner") {
-        return res.status(403).json({ message: "Diretor nao pode excluir definitivamente. Use descarte." });
-      }
-      if (user.role !== "platform_owner") return res.status(403).json({ message: "Acesso negado" });
       await storage.deleteTake(req.params.id);
       await createAudioAuditLog(req, "take.deleted.permanent", {
         takeId: takeRecord.id,
@@ -1537,10 +1537,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/takes/:id/download-link", requireAuth, async (req, res) => {
-    // Agora o link de download é sempre o endpoint de download do backend para garantir intermediação total
     res.status(200).json({
       url: `/api/takes/${req.params.id}/download`,
       isProxied: true,
+      ttlSeconds: SUPABASE_DOWNLOAD_URL_TTL_SECONDS,
     });
   });
 
