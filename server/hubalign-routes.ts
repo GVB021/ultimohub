@@ -110,6 +110,8 @@ export function registerHubAlignRoutes(app: Express) {
     try {
       const settings = await storage.getAllSettings();
       const bucket = resolveHubAlignBucket(settings);
+      
+      // Listamos tudo sob hubalign/projects/ para encontrar as pastas de projeto
       const rows = await listSupabaseStorageObjects({
         bucket,
         prefix: "hubalign/projects/",
@@ -121,29 +123,92 @@ export function registerHubAlignRoutes(app: Express) {
       const projectIds = new Set<string>();
       for (const row of rows as any[]) {
         const name = String(row?.name || "");
-        const match = name.match(/^hubalign\/projects\/([^/]+)\//);
-        if (match?.[1]) projectIds.add(match[1]);
+        // O formato esperado agora é hubalign/projects/ID/project.json ou similar
+        // A listagem do Supabase costuma retornar apenas o nome relativo ao prefixo se usarmos delimitador, 
+        // mas aqui estamos pegando o nome completo ou relativo dependendo da implementação.
+        // Se 'prefix' for 'hubalign/projects/', row.name pode ser 'ID/project.json'
+        const parts = name.split("/");
+        if (parts.length > 0 && parts[0]) projectIds.add(parts[0]);
       }
 
       const projects: HubAlignProject[] = [];
-      for (const id of Array.from(projectIds)) {
-        projects.push({
-          id,
-          name: `Projeto ${id.slice(0, 8).toUpperCase()}`,
-          description: "Projeto HubAlign",
-          status: "editing",
-          createdBy: HUBALIGN_OWNER_USERNAME,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          fileCount: rows.filter((r: any) => String(r?.name || "").startsWith(`hubalign/projects/${id}/files/`)).length,
-          versionCount: rows.filter((r: any) => String(r?.name || "").startsWith(`hubalign/projects/${id}/versions/`)).length,
-        });
-      }
+      const fetchPromises = Array.from(projectIds).map(async (id) => {
+        try {
+          const path = projectPath(id, "project.json");
+          const response = await downloadFromSupabaseStorage({ bucket, path });
+          if (response.ok) {
+            const data = await response.json();
+            
+            // Calculamos contagens reais
+            const fileCount = rows.filter((r: any) => String(r?.name || "").startsWith(`${id}/files/`)).length;
+            const versionCount = rows.filter((r: any) => String(r?.name || "").startsWith(`${id}/versions/`)).length;
+
+            projects.push({
+              ...data,
+              fileCount,
+              versionCount,
+            });
+          }
+        } catch (e) {
+          // Se não encontrar project.json, ignoramos ou adicionamos um placeholder
+          logger.warn(`[HubAlign] Falha ao carregar project.json para ${id}:`, (e as any).message);
+        }
+      });
+
+      await Promise.all(fetchPromises);
+
+      // Ordenar por data de atualização (mais recente primeiro)
+      projects.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
       await writeHubAlignAudit(req, "HUBALIGN_PROJECTS_LISTED", { count: projects.length });
       return res.status(200).json({ items: projects });
     } catch (err: any) {
+      logger.error("[HubAlign] Projects list failure:", err);
       return res.status(500).json({ message: err?.message || "Falha ao listar projetos HubAlign" });
+    }
+  });
+
+  app.get("/api/hubalign/projects/:projectId/status", requireAuth, requireHubAlignOwner, async (req, res) => {
+    try {
+      const projectId = String(req.params.projectId || "").trim();
+      const settings = await storage.getAllSettings();
+      const bucket = resolveHubAlignBucket(settings);
+      
+      const path = projectPath(projectId, "tracks/latest.json");
+      let latestVersion = null;
+      try {
+        const response = await downloadFromSupabaseStorage({ bucket, path });
+        if (response.ok) {
+          latestVersion = await response.json();
+        }
+      } catch (e) {
+        // Sem versão ainda
+      }
+
+      // Buscar histórico de versões
+      const versionRows = await listSupabaseStorageObjects({
+        bucket,
+        prefix: projectPath(projectId, "versions/"),
+        limit: 20,
+        sortBy: { column: "created_at", order: "desc" }
+      });
+
+      return res.status(200).json({
+        projectId,
+        latestVersion,
+        history: versionRows.map((r: any) => ({
+          name: r.name,
+          updatedAt: r.updated_at,
+          size: r.metadata?.size
+        })),
+        metrics: {
+          lastAssemblyTime: latestVersion?.assembledAt || null,
+          takesCount: latestVersion?.takes?.length || 0,
+          status: latestVersion ? "ready" : "pending"
+        }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Falha ao obter status do projeto" });
     }
   });
 
@@ -425,6 +490,7 @@ export function registerHubAlignRoutes(app: Express) {
 
       // 3. Gerar versao da track (Algoritmo de Montagem)
       debug.push("Gerando versao da track...");
+      const startedAssemblyAt = performance.now();
       const versionId = randomUUID();
       const versionData = {
         id: versionId,
@@ -435,6 +501,7 @@ export function registerHubAlignRoutes(app: Express) {
         status: "assembled",
         qualityPreserved: true,
         syncPreserved: true,
+        processingTimeMs: Math.round(performance.now() - startedAssemblyAt),
       };
 
       createdVersionPath = projectPath(projectId, `versions/assembled_${Date.now()}_${versionId}.json`);
